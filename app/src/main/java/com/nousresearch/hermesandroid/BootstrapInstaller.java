@@ -85,7 +85,10 @@ public final class BootstrapInstaller {
 
     /**
      * 安装 bootstrap。幂等、线程安全。
-     * @return true 表示本次调用完成了安装；false 表示已在安装中或已装好。
+     * 并发语义：若另一个线程正在安装，本调用**等待其完成**而不是立即返回
+     * （立即返回会让调用方误以为已完成，在解压未结束时继续往下走）。
+     *
+     * @return true 表示本次调用完成了安装；false 表示已装好（含等待到别人装完）。
      */
     public static boolean install(Context ctx) throws IOException {
         if (isInstalled(ctx)) {
@@ -93,8 +96,18 @@ public final class BootstrapInstaller {
             return false;
         }
         if (!sInstalling.compareAndSet(false, true)) {
-            Log.w(TAG, "已有安装在进行，本次跳过");
-            return false;
+            Log.w(TAG, "已有安装在进行，等待其完成…");
+            long deadline = System.currentTimeMillis() + 10 * 60 * 1000L;
+            while (sInstalling.get() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("等待安装完成时被中断", e);
+                }
+            }
+            if (isInstalled(ctx)) return false;
+            throw new IOException("等待其他安装线程超时，bootstrap 仍未就绪");
         }
         try {
             if (isInstalled(ctx)) return false;   // 双检

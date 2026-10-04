@@ -52,7 +52,11 @@ public class SetupService extends Service {
         startForeground(NOTIF_ID, buildNotification("准备中…", 0));
 
         if (running) {
-            Log.w(TAG, "已有初始化在跑，忽略本次启动");
+            // 已有初始化在跑：不能只 return —— 上面已经 startForeground 了，
+            // 直接返回会留下一个永不消失的通知（且本实例不会被 stopSelf）。
+            Log.w(TAG, "已有初始化在跑，本实例退出前台");
+            stopForegroundCompat();
+            stopSelf(startId);
             return START_NOT_STICKY;
         }
         running = true;

@@ -42,14 +42,35 @@ public final class PayloadInstaller {
         return BootstrapInstaller.isPayloadInstalled(ctx);
     }
 
+    /**
+     * 安装 payload。幂等、线程安全。
+     *
+     * 并发语义（重要）：
+     *   若另一个线程正在安装，本调用**不会立即返回 false 让调用方继续**——
+     *   那会让调用方误以为「已完成」而在解压未结束时就往下走。
+     *   这里改为轮询等待直到装好或超时。
+     *
+     * @return true 表示本次调用完成了安装；false 表示已装好（含等待到别人装完）。
+     */
     public static boolean install(Context ctx) throws IOException {
         if (isInstalled(ctx)) {
             Log.i(TAG, "payload 已安装，跳过");
             return false;
         }
         if (!sInstalling.compareAndSet(false, true)) {
-            Log.w(TAG, "已有 payload 安装在进行，本次跳过");
-            return false;
+            Log.w(TAG, "已有 payload 安装在进行，等待其完成…");
+            // 等另一个线程装完（最多 10 分钟），避免调用方抢跑
+            long deadline = System.currentTimeMillis() + 10 * 60 * 1000L;
+            while (sInstalling.get() && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("等待安装完成时被中断", e);
+                }
+            }
+            if (isInstalled(ctx)) return false;
+            throw new IOException("等待其他安装线程超时，payload 仍未就绪");
         }
         try {
             if (isInstalled(ctx)) return false;
