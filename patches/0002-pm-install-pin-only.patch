@@ -1,0 +1,21 @@
+diff --git a/pm/install.py b/pm/install.py
+index 3b6cfd8433..f927cae3d9 100644
+--- a/pm/install.py
++++ b/pm/install.py
+@@ -152,9 +152,14 @@ def _identity(lockfile: Lockfile, name: str, target: str):
+     (target, tuple(artifact sha256s)) — or None when the lock pins no
+     artifacts (nothing digest-bound to compare)."""
+     artifacts = lockfile.artifacts(name, target)
+-    if not artifacts:
++    # Pin-only rows (e.g. termux-docker) carry the digest inside the url/version
++    # and stage no bytes, so their artifact dict has no ``sha256``. Only
++    # digest-bound artifacts form an identity; if none remain, there is nothing
++    # to compare and the caller keeps its version+path check.
++    shas = tuple(a["sha256"] for a in artifacts if "sha256" in a)
++    if not shas:
+         return None
+-    return (target, tuple(a["sha256"] for a in artifacts))
++    return (target, shas)
+ 
+ 
+ def lazy_installs_allowed() -> bool:

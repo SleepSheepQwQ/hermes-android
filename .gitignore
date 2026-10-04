@@ -1,0 +1,33 @@
+# 构建产物
+build/
+out/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# 打包载荷（本地生成，CI 里跑）
+payload/
+bootstrap/
+*.tar.gz
+*.zip
+!gradle/wrapper/gradle-wrapper.jar
+
+# Gradle / Android
+.gradle/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# 临时与测试
+.scratch/
+trimtest/
+*.log
+
+# 编辑器
+.idea/
+*.iml
+.vscode/
+.DS_Store

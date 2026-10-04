@@ -1,0 +1,28 @@
+diff --git a/tools/environments/file_sync.py b/tools/environments/file_sync.py
+index 5d12756c74..86c6127f67 100644
+--- a/tools/environments/file_sync.py
++++ b/tools/environments/file_sync.py
+@@ -24,7 +24,10 @@ except ImportError:
+ from pathlib import Path
+ from typing import Callable
+ 
+-import psutil
++try:
++    import psutil
++except Exception:
++    psutil = None  # Termux
+ 
+ from hermes_constants import get_hermes_home
+ from tools.environments.base import _file_mtime_key
+@@ -89,6 +92,11 @@ def _temp_entry_owner_alive(name: str) -> bool:
+     pid_part = name[len(_SYNC_BACK_TEMP_PREFIX):].split("-", 1)[0]
+     if not pid_part.isdigit():
+         return True
++    if psutil is None:
++        # No psutil (e.g. Termux, where the wheel does not build): we cannot
++        # probe the PID, so treat the entry as owned by a live process and let
++        # the age cutoff reclaim it — same as a name without a PID.
++        return True
+     return psutil.pid_exists(int(pid_part))
+ 
+ 
