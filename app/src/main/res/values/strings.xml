@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hermes</string>
+    <string name="btn_install">安装环境</string>
+    <string name="btn_run">运行 Hermes</string>
+</resources>

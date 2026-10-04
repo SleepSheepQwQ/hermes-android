@@ -1,0 +1,87 @@
+name: build-bootstrap
+
+# 产出定制版 Termux aarch64 bootstrap（含 Hermes 所需的 python/node/git/ripgrep/ffmpeg）
+# 依据 docs/04-bootstrap-findings.md：官方 bootstrap 不含这些包，必须自行定制。
+# 用 generate-bootstraps.sh（从 apt 镜像拉 deb 重打包，无需 Docker、无需编译）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: "Hermes 源码 ref（tag/commit/branch）"
+        required: true
+        default: "main"
+      extra_packages:
+        description: "额外附加包（空格分隔）"
+        required: false
+        default: "python git ripgrep ffmpeg nodejs-lts"
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout termux-packages
+        uses: actions/checkout@v4
+        with:
+          repository: termux/termux-packages
+          ref: master
+          path: termux-packages
+
+      - name: Install generator deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y aria2 ar jq xz-utils zip file
+
+      - name: Generate customized aarch64 bootstrap
+        working-directory: termux-packages
+        run: |
+          set -eux
+          ARGS=(--architectures aarch64)
+          for pkg in ${{ inputs.extra_packages }}; do
+            ARGS+=(--add "$pkg")
+          done
+          ./scripts/generate-bootstraps.sh "${ARGS[@]}"
+          ls -lh bootstrap-aarch64.zip
+          sha256sum bootstrap-aarch64.zip | tee bootstrap-aarch64.zip.sha256
+
+      - name: Inspect bootstrap contents (sanity)
+        working-directory: termux-packages
+        run: |
+          set -eux
+          for t in python node git rg ffmpeg; do
+            if unzip -l bootstrap-aarch64.zip | grep -qE "(^|/)bin/${t}(3\.[0-9]+)?$"; then
+              echo "OK   $t"
+            else
+              echo "MISS $t (可能包名/路径不同，需人工确认)"
+            fi
+          done
+          echo "文件数: $(unzip -l bootstrap-aarch64.zip | tail -1)"
+
+      - name: Upload bootstrap artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-aarch64
+          path: |
+            termux-packages/bootstrap-aarch64.zip
+            termux-packages/bootstrap-aarch64.zip.sha256
+          retention-days: 30
+
+      - name: Upload as release asset
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: termux-packages
+        run: |
+          set -eux
+          TAG="bootstrap-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "bootstrap $TAG" \
+            --notes "定制 aarch64 bootstrap（含 ${{ inputs.extra_packages }}），用于 hermes-android 打包。" \
+            bootstrap-aarch64.zip bootstrap-aarch64.zip.sha256 || {
+              gh release upload "$TAG" bootstrap-aarch64.zip bootstrap-aarch64.zip.sha256 --repo "${{ github.repository }}"
+            }

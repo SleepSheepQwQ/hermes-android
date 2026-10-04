@@ -1,0 +1,55 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.nousresearch.hermesandroid'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.nousresearch.hermesandroid"
+        minSdk 24          // Termux bootstrap 要求 Android 7+；W^X 限制从 API 29 起需处理
+        targetSdk 28       // 关键：<=28 才允许从应用私有目录 execve（W^X 豁免）
+        versionCode 1
+        versionName "1.0.0"
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug   // 首次构建用 debug 签名，后续换成 CI secret
+        }
+        debug {
+            // 保留调试信息
+        }
+    }
+
+    // 关键：把 lib*.so 原样打包，不做二次压缩也不 strip，
+    // 否则 bootstrap zip 会被破坏（termux-app 的做法）。
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            keepDebugSymbols += ["**/*.so"]
+        }
+        resources {
+            excludes += ["META-INF/*"]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // 打包后的 bootstrap zip 位于 jniLibs/arm64-v8a/libtermux-bootstrap.so，
+    // 由 build-apk.yml 在构建前拷贝进来；本目录不放二进制。
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
+}

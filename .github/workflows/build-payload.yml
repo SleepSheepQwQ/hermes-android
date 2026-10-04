@@ -1,0 +1,75 @@
+name: build-payload
+
+# 在 CI 里用 QEMU 模拟 aarch64，于真实 Termux 环境中安装 Hermes 的 [termux] 依赖，
+# 产出可直接打进 APK 的 venv（已修剪）。
+#
+# 做法来源（实战验证过的先例）：
+#   camillanapoles/termux-wheel-forge/.github/workflows/build-wheel.yml
+#   → docker/setup-qemu-action@v3 (platforms: arm64)
+#   → docker run --platform linux/arm64 termux/termux-docker:latest
+#
+# 依据 docs/04-bootstrap-findings.md：原生扩展必须在 bionic 上编译，
+# ubuntu 的 manylinux wheel 在 Android 上 ABI 不兼容。
+
+on:
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: "Hermes 源码 ref（tag/commit/branch）"
+        required: true
+        default: "main"
+      extra:
+        description: "pip extras（默认 termux）"
+        required: false
+        default: "termux"
+
+permissions:
+  contents: write
+
+jobs:
+  payload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Pull Termux container
+        run: docker pull termux/termux-docker:latest
+
+      - name: Stage build inputs
+        run: |
+          set -eux
+          mkdir -p buildin dist
+          cp scripts/trim_source.sh scripts/trim_venv.sh buildin/
+          cp scripts/build-payload-in-termux.sh buildin/
+          cp patches/*.patch buildin/
+          ls -l buildin/
+
+      - name: Build Hermes venv inside Termux (QEMU)
+        run: |
+          set -eux
+          docker run --platform linux/arm64 --name hermes-build \
+            -v "$PWD/buildin:/work:ro" \
+            -v "$PWD/dist:/data/data/com.termux/files/home/dist" \
+            -e HERMES_REF='${{ inputs.hermes_ref }}' \
+            -e HERMES_EXTRA='${{ inputs.extra }}' \
+            termux/termux-docker:latest \
+            bash /work/build-payload-in-termux.sh
+          ls -lh dist/ || true
+
+      - name: Show artifact sizes
+        run: |
+          set -eux
+          du -sh dist/* || true
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-payload
+          path: dist/*.tar.zst
+          retention-days: 30
