@@ -62,14 +62,22 @@ jobs:
           done
           echo "文件数: $(unzip -l bootstrap-aarch64.zip | tail -1)"
 
-      - name: Upload bootstrap artifact
+      - name: Smoke test bootstrap
+        working-directory: termux-packages
+        run: |
+          set -eux
+          bash "$GITHUB_WORKSPACE/scripts/smoke_test.sh" bootstrap bootstrap-aarch64.zip bootstrap-aarch64.zip.sha256
+
+      - name: Upload bootstrap artifact (short-lived, job handoff only)
+        # Artifacts 在 Free 计划仅 500MB 配额，bootstrap 203MB 已占近半，
+        # 故 retention 仅 1 天；长期产物走下面的 Release。
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-aarch64
           path: |
             termux-packages/bootstrap-aarch64.zip
             termux-packages/bootstrap-aarch64.zip.sha256
-          retention-days: 30
+          retention-days: 1
 
       - name: Upload as release asset
         if: github.ref == 'refs/heads/main'

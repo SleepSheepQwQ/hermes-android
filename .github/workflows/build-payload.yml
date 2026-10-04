@@ -33,6 +33,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space
+        # ubuntu-latest 仅 ~14GB 可用磁盘；bootstrap 解压 616MB + payload 512MB
+        # + Docker 镜像 + 中间产物极易爆盘。详见 docs/11-cicd-constraints.md
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          swap-storage: true
+
       - name: Set up QEMU (arm64)
         uses: docker/setup-qemu-action@v3
         with:
@@ -67,9 +78,32 @@ jobs:
           set -eux
           du -sh dist/* || true
 
-      - name: Upload payload
+      - name: Smoke test payload
+        run: |
+          set -eux
+          bash scripts/smoke_test.sh payload dist/*.tar.zst
+
+      - name: Upload payload (short-lived, job handoff only)
+        # 注意：GitHub Actions Artifacts 在 Free 计划仅 500MB 总配额，
+        # payload ~300MB 会迅速吃满，故 retention 只留 1 天，仅用于 job 间传递。
+        # 长期产物一律走 Release（单文件上限 2GiB，无总量配额）。
         uses: actions/upload-artifact@v4
         with:
           name: hermes-payload
           path: dist/*.tar.zst
-          retention-days: 30
+          retention-days: 1
+
+      - name: Publish payload to Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          TAG="payload-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "payload $TAG" \
+            --notes "Hermes payload（源码+venv+tools），ref=${{ inputs.hermes_ref }}，extras=${{ inputs.extra }}" \
+            dist/*.tar.zst || \
+            gh release upload "$TAG" dist/*.tar.zst --repo "${{ github.repository }}" --clobber
+          sha256sum dist/*.tar.zst | tee dist/SHA256SUMS

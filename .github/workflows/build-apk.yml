@@ -70,4 +70,4 @@ jobs:
         with:
           name: hermes-apk-debug
           path: app/build/outputs/apk/debug/*.apk
-          retention-days: 30
+          retention-days: 1
