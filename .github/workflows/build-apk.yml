@@ -1,18 +1,29 @@
 name: build-apk
 
 # 把 bootstrap + Hermes 载荷打进 APK。
-# 依赖：build-bootstrap.yml 产出的 bootstrap-aarch64.zip
-# 说明：本机不构建；全部在 GitHub Actions 上完成。
+# 依赖 Release 产物：
+#   bootstrap-*  → bootstrap-aarch64.zip
+#   payload-*    → hermes-payload.tar.zst
+#
+# 说明：本机不构建；编译全部在 GitHub Actions 上完成。
 
 on:
   workflow_dispatch:
     inputs:
       bootstrap_tag:
-        description: "bootstrap release tag（留空则自动取最新 bootstrap-*）"
+        description: "bootstrap release tag（留空自动取最新 bootstrap-*）"
         required: false
         default: ""
+      payload_tag:
+        description: "payload release tag（留空自动取最新 payload-*）"
+        required: false
+        default: ""
+      build_type:
+        description: "debug 或 release"
+        required: false
+        default: "debug"
   workflow_run:
-    workflows: ["build-bootstrap"]
+    workflows: ["build-bootstrap", "build-payload"]
     types: [completed]
 
 permissions:
@@ -25,30 +36,74 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve bootstrap artifact
-        id: boot
+      - name: Free disk space
+        # ubuntu-latest 仅 ~14GB 可用；两个载荷解压后合计 >1GB，加上 Android SDK
+        # 与 Gradle 缓存极易爆盘。详见 docs/11-cicd-constraints.md
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: false
+          dotnet: true
+          haskell: true
+          swap-storage: true
+
+      - name: Resolve release tags
+        id: tags
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eux
-          TAG="${{ inputs.bootstrap_tag }}"
-          if [ -z "$TAG" ]; then
-            TAG=$(gh release list --repo "${{ github.repository }}" --limit 50 \
-                  | awk '$1 ~ /^bootstrap-/ {print $1; exit}')
+          BTAG="${{ inputs.bootstrap_tag }}"
+          PTAG="${{ inputs.payload_tag }}"
+          if [ -z "$BTAG" ]; then
+            BTAG=$(gh release list --repo "${{ github.repository }}" --limit 100 \
+                   | awk '$1 ~ /^bootstrap-/ {print $1; exit}')
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          gh release download "$TAG" --repo "${{ github.repository }}" \
-            --pattern 'bootstrap-aarch64.zip' --dir bootstrap
-          ls -lh bootstrap/
+          if [ -z "$PTAG" ]; then
+            PTAG=$(gh release list --repo "${{ github.repository }}" --limit 100 \
+                   | awk '$1 ~ /^payload-/ {print $1; exit}')
+          fi
+          echo "bootstrap_tag=$BTAG" >> "$GITHUB_OUTPUT"
+          echo "payload_tag=$PTAG"   >> "$GITHUB_OUTPUT"
+          echo "使用 bootstrap=$BTAG payload=$PTAG"
 
-      - name: Place bootstrap into jniLibs
+      - name: Download bootstrap and payload
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eux
-          mkdir -p app/src/main/jniLibs/arm64-v8a
-          # 伪装成 .so：Android 安装时会把 lib/<abi>/*.so 原样解压到 nativeLibraryDir，
-          # 规避 assets 压缩与 execve 限制（termux-app 的做法）。
-          cp bootstrap/bootstrap-aarch64.zip app/src/main/jniLibs/arm64-v8a/libtermux-bootstrap.so
-          ls -lh app/src/main/jniLibs/arm64-v8a/
+          mkdir -p artifacts
+          gh release download "${{ steps.tags.outputs.bootstrap_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern 'bootstrap-aarch64.zip*' --dir artifacts
+          gh release download "${{ steps.tags.outputs.payload_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern '*.tar.zst' --dir artifacts || \
+          gh release download "${{ steps.tags.outputs.payload_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern '*.tar.gz' --dir artifacts
+          ls -lh artifacts/
+
+      - name: Smoke test downloaded artifacts
+        run: |
+          set -eux
+          bash scripts/smoke_test.sh bootstrap artifacts/bootstrap-aarch64.zip || true
+          for f in artifacts/*.tar.zst artifacts/*.tar.gz; do
+            [ -f "$f" ] && bash scripts/smoke_test.sh payload "$f" || true
+          done
+
+      - name: Place payloads into jniLibs
+        run: |
+          set -eux
+          JNI=app/src/main/jniLibs/arm64-v8a
+          mkdir -p "$JNI"
+          # 伪装成 .so：Android 安装时会把 lib/<abi>/*.so 原样解压到
+          # nativeLibraryDir（只读），从而规避 assets 压缩与 W^X exec 限制。
+          cp artifacts/bootstrap-aarch64.zip "$JNI/libtermux-bootstrap.so"
+          for f in artifacts/*.tar.zst artifacts/*.tar.gz; do
+            [ -f "$f" ] && cp "$f" "$JNI/libhermes-payload.so"
+          done
+          ls -lh "$JNI"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -56,18 +111,61 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # 用 wrapper 里声明的版本；无需仓库内提交 gradle-wrapper.jar
+          gradle-version: '8.9'
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build debug APK
+      - name: Build APK
+        env:
+          BUILD_TYPE: ${{ inputs.build_type }}
         run: |
           set -eux
-          chmod +x gradlew
-          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+          # 生成 wrapper（仓库不提交二进制 jar，由 CI 现生成）
+          gradle wrapper --gradle-version 8.9 || true
+          chmod +x gradlew 2>/dev/null || true
 
-      - name: Upload APK
+          TASK=":app:assembleDebug"
+          [ "${BUILD_TYPE:-debug}" = "release" ] && TASK=":app:assembleRelease"
+
+          if [ -x ./gradlew ]; then
+            ./gradlew "$TASK" --no-daemon --stacktrace
+          else
+            gradle "$TASK" --no-daemon --stacktrace
+          fi
+          find app/build/outputs -name '*.apk' -exec ls -lh {} \;
+
+      - name: Verify APK signature
+        run: |
+          set -eux
+          APK=$(find app/build/outputs -name '*.apk' | head -1)
+          [ -n "$APK" ] || { echo "未产出 APK"; exit 1; }
+          # apksigner 由 Android SDK build-tools 提供
+          APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK" || true
+
+      - name: Upload APK (short-lived)
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-apk-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: hermes-apk
+          path: app/build/outputs/apk/**/*.apk
           retention-days: 1
+
+      - name: Publish APK to Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          APK=$(find app/build/outputs -name '*.apk' | head -1)
+          TAG="apk-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Hermes APK $TAG" \
+            --notes "bootstrap=${{ steps.tags.outputs.bootstrap_tag }} payload=${{ steps.tags.outputs.payload_tag }} type=${{ inputs.build_type }}" \
+            "$APK" || gh release upload "$TAG" "$APK" --repo "${{ github.repository }}" --clobber
+          sha256sum "$APK" | tee SHA256SUMS
