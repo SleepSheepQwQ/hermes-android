@@ -68,6 +68,9 @@ jobs:
             PTAG=$(gh release list --repo "${{ github.repository }}" --limit 100 \
                    | awk '$1 ~ /^payload-/ {print $1; exit}')
           fi
+          # 防御：找不到 tag 就明确失败，不要让后续 gh release download "" 报出难懂的错
+          [ -n "$BTAG" ] || { echo "!! 找不到任何 bootstrap-* Release"; exit 1; }
+          [ -n "$PTAG" ] || { echo "!! 找不到任何 payload-* Release（需先跑 build-payload）"; exit 1; }
           echo "bootstrap_tag=$BTAG" >> "$GITHUB_OUTPUT"
           echo "payload_tag=$PTAG"   >> "$GITHUB_OUTPUT"
           echo "使用 bootstrap=$BTAG payload=$PTAG"
