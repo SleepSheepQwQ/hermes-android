@@ -122,29 +122,54 @@ cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
 print("  已写入:", newhome)
 PYEOF
 
-# ---------- 5) 修 venv/bin 脚本的 shebang（仅绝对路径写法）----------
-echo "==> 检查 venv/bin 脚本的 shebang"
+# ---------- 5) 修 venv/bin 脚本的 shebang ----------
+# 关键修复（docs/18）：pip 生成的 console script（hermes/pip/…）shebang 是
+#   #!/data/data/com.nousresearch.hermesandroid/files/usr/bin/python
+# 也就是**bootstrap 的基础 python**，而它**不会激活 venv 的 site-packages**，
+# 于是 `from hermes_cli.main import main` → ModuleNotFoundError。
+# 实测：用 venv/bin/python3.14 显式跑同一脚本则正常。
+#
+# 正解：改成 POSIX shell 包装，显式用 venv 自己的解释器：
+#   #!/bin/sh
+#   '''exec' "$(dirname "$(readlink -f "$0")")/python3.14" "$0" "$@"
+#   '''
+# 这样：① 用 venv python（site-packages 正确）② 完全免疫路径搬迁
+# （$(dirname $0) 运行时解析）③ 与 Hermes 官方 launchers.py 的形态一致。
+echo "==> 重写 venv/bin 脚本的 shebang（改为 shell 包装 + venv 解释器）"
+EXE_NAME=$(basename "$NEW_TGT")          # 例如 python3.14
 fixed=0
 for f in "$VENV"/bin/*; do
   [ -f "$f" ] || continue
+  [ -L "$f" ] && continue                # 软链（python/python3）跳过
+  # 只处理以 #! 开头的 Python 脚本（pip 生成的 console script）
   head1=$(head -c 300 "$f" 2>/dev/null | head -1)
   case "$head1" in
-    '#!'*"/data/data/"*)
-      python3 - "$f" "$NEW_TGT" <<'PYEOF'
-import sys, pathlib
-p, new = pathlib.Path(sys.argv[1]), sys.argv[2]
-data = p.read_bytes()
-if data.startswith(b"#!"):
-    nl = data.find(b"\n")
-    if nl > 0 and b"/data/data/" in data[:nl]:
-        p.write_bytes(b"#!" + new.encode() + data[nl:])
-        print("  shebang 修正:", p.name)
-PYEOF
-      fixed=$((fixed + 1))
-      ;;
+    '#!'*python*) : ;;
+    *) continue ;;
   esac
+  python3 - "$f" "$EXE_NAME" <<'PYEOF'
+import sys, pathlib
+p, exe = pathlib.Path(sys.argv[1]), sys.argv[2]
+data = p.read_bytes()
+if not data.startswith(b"#!"):
+    sys.exit(0)
+nl = data.find(b"\n")
+if nl <= 0:
+    sys.exit(0)
+body = data[nl + 1:]
+# POSIX shell 包装：用脚本同目录的解释器执行自身
+wrapper = (
+    "#!/bin/sh\n"
+    "# 由 hermes-android fix_python_paths.sh 重写：\n"
+    "# 原 shebang 指向 bootstrap python（不激活 venv），改为 venv 自身解释器。\n"
+    "'''exec' \"$(dirname \"$(readlink -f \"$0\")\")/" + exe + "\" \"$0\" \"$@\"\n"
+    "'''\n"
+).encode()
+p.write_bytes(wrapper + body)
+PYEOF
+  fixed=$((fixed + 1))
 done
-echo "  处理 $fixed 个"
+echo "  重写 $fixed 个 console script"
 
 # ---------- 6) 产出 paths.env ----------
 # 供 Java 侧拼 LD_LIBRARY_PATH：bootstrap 的 lib 与 managed python 的 lib 都要带上。
