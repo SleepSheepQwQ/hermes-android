@@ -1,11 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# 在 Termux 容器内运行（由 build-payload.yml 通过 QEMU 启动）。
+# 在 Termux 容器内运行（由 build-payload.yml 用 `docker run` 调起）。
 #
-# 关键约束（来源：termux-docker issue #62/#64，见 docs/12）：
-#  1. GitHub Actions 会覆盖 ENTRYPOINT 并以 root 运行 → 每条命令需 /entrypoint.sh 前缀。
-#     本脚本由 workflow 以 `bash /work/xxx.sh` 调起，故内部自带 entrypoint 转发。
-#  2. 容器内没有 /etc/os-release → actions/checkout 不可用，必须 git clone。
-#  3. upload-artifact 在容器场景不可用 → 产物写到挂载的 /out，由宿主 docker cp 取出。
+# 调用链（重要）：
+#   docker run termux/termux-docker:aarch64 bash /work/xxx.sh <ref> <extra>
+#     → 镜像 ENTRYPOINT=/entrypoint.sh 自动生效
+#     → 检测到 uid=0（root）→ 用 su 降权到 system(uid 1000) 并清空环境后执行本脚本
+#   因此：
+#     1. 本脚本**已经**以非 root 运行，pkg 不会报错，无需再调 /entrypoint.sh。
+#     2. 自定义参数必须走**位置参数**——entrypoint 的 `su -i` 会清空环境变量，
+#        docker 的 -e 传不进来（这是本次修正的一个真实 bug）。
 #
 # 产出：sealed payload（符合 docs/08 的 manifest.json 规范）：
 #   <out>/manifest.json
@@ -14,32 +17,24 @@
 #   <out>/tools/
 set -uo pipefail
 
-HERMES_REF="${HERMES_REF:-main}"
-HERMES_EXTRA="${HERMES_EXTRA:-termux}"
+HERMES_REF="${1:-main}"
+HERMES_EXTRA="${2:-termux}"
 PREFIX_DIR=/data/data/com.termux/files
 HOME_DIR="$PREFIX_DIR/home"
 WORK=/work
-OUT=/data/data/com.termux/files/home/out          # 与 workflow 挂载点对应
+OUT="$HOME_DIR/out"                 # 与 workflow 的挂载点对应
 BUILD="$HOME_DIR/build"
 mkdir -p "$OUT" "$BUILD"
 
-# Actions 覆盖 ENTRYPOINT 后必须以 /entrypoint.sh 转发命令
-termux_run() {
-  if [ -x /entrypoint.sh ]; then
-    /entrypoint.sh "$@"
-  else
-    "$@"
-  fi
-}
-
 echo "==> 环境自检"
+echo "uid=$(id -u) user=$(id -un)  (应为非 root，由 entrypoint.sh 降权)"
 uname -m
-echo "HOME=$HOME_DIR"
-cat /etc/os-release 2>/dev/null | head -2 || echo "(无 /etc/os-release，符合容器预期)"
+echo "HOME=$HOME_DIR  PREFIX=$PREFIX_DIR/usr"
+echo "HERMES_REF=$HERMES_REF  HERMES_EXTRA=$HERMES_EXTRA"
 
 echo "==> 安装构建工具链"
-termux_run pkg update -y || true
-termux_run pkg install -y git python clang rust make pkg-config \
+pkg update -y || true
+pkg install -y git python clang rust make pkg-config \
   libffi openssl ripgrep ffmpeg nodejs-lts zstd || {
     echo "!! pkg install 失败"; exit 1; }
 
@@ -74,10 +69,10 @@ venv/bin/python -c "import hermes_constants; print('hermes import OK')" || exit 
 venv/bin/hermes --version || true
 
 echo "==> 修剪源码"
-termux_run bash "$WORK/trim_source.sh" .
+bash "$WORK/trim_source.sh" .
 
 echo "==> 修剪 venv"
-termux_run bash "$WORK/trim_venv.sh" venv
+bash "$WORK/trim_venv.sh" venv
 
 # ---------------- 组装 sealed payload（docs/08 规范） ----------------
 echo "==> 组装 sealed payload 布局"
@@ -108,13 +103,13 @@ cat > "$PAY/manifest.json" <<JSON
 JSON
 
 echo "==> 修复 editable 绝对路径（docs/09）"
-termux_run bash "$WORK/fix_editable.sh" "$PAY" || {
+bash "$WORK/fix_editable.sh" "$PAY" || {
   echo "!! fix_editable 失败，payload 搬迁后会崩"; exit 1; }
 
 echo "==> 修复 venv 的 Python 路径（软链 + pyvenv.cfg home=）"
 # 关键：venv/bin/python 是指向构建机绝对路径的软链，pyvenv.cfg 的 home= 同理。
 # 不重写则搬进 APK 后解释器找不到、标准库找不到（docs/13）。
-termux_run bash "$WORK/fix_python_paths.sh" "$PAY" \
+bash "$WORK/fix_python_paths.sh" "$PAY" \
   "/data/data/com.nousresearch.hermesandroid/files/opt" || {
   echo "!! fix_python_paths 失败"; exit 1; }
 

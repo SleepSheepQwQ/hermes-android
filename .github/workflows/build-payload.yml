@@ -1,15 +1,26 @@
 name: build-payload
 
-# 在 CI 里用 QEMU 模拟 aarch64，于真实 Termux 环境中安装 Hermes 的 [termux] 依赖，
-# 产出可直接打进 APK 的 venv（已修剪）。
+# 在**原生 aarch64 runner** 上构建 Hermes 的 [termux] 依赖，产出 sealed payload。
 #
-# 做法来源（实战验证过的先例）：
-#   camillanapoles/termux-wheel-forge/.github/workflows/build-wheel.yml
-#   → docker/setup-qemu-action@v3 (platforms: arm64)
-#   → docker run --platform linux/arm64 termux/termux-docker:latest
+# 为什么用 ubuntu-24.04-arm 而不是 ubuntu-latest + QEMU：
+#   1. arm64 hosted runner 对 public 仓库免费（GitHub 2025-01 公告）。
+#   2. 原生 arm64 → 不需要 QEMU 模拟。QEMU 用户态在 GHA 上非确定性崩溃
+#      （docker/setup-qemu-action#188），且慢 5~20 倍。
+#   3. termux-docker 官方与社区案例都在原生架构上跑，跨架构 QEMU 无成功先例。
+#   依据：docs/14-cicd-arm64-runner.md
 #
-# 依据 docs/04-bootstrap-findings.md：原生扩展必须在 bionic 上编译，
-# ubuntu 的 manylinux wheel 在 Android 上 ABI 不兼容。
+# 为什么仍用 termux-docker 容器：
+#   bootstrap 的二进制是 bionic（aarch64-linux-android），需要 /system/bin/linker64
+#   与 aosp-libs。termux-docker 镜像已封装好这套（= bootstrap + aosp-libs），
+#   自己用 proot 搭要额外处理 linker，风险更高。
+#
+# 容器调用要点（来源：termux-docker README + issue #62/#64）：
+#   - 用**手动 docker run**（不是 jobs.<container>），ENTRYPOINT 不会被覆盖，
+#     /entrypoint.sh 会自动把 root 降权到 system(uid 1000)，pkg 才不报错。
+#   - ARM 容器需要 --security-opt seccomp=unconfined（personality() 系统调用）。
+#   - 容器内 uid(1000) != runner uid，挂载目录必须 a+rwX。
+#   - entrypoint.sh 用 `su ... -i` 清空环境后只注入固定变量，
+#     所以**自定义参数必须走位置参数**，不能靠 -e 环境变量。
 
 on:
   workflow_dispatch:
@@ -28,14 +39,23 @@ permissions:
 
 jobs:
   payload:
-    runs-on: ubuntu-latest
+    # 原生 arm64（public 仓库免费）。不能用 ubuntu-latest：那是 x86_64，
+    # 需 QEMU 模拟 aarch64，慢且不稳定。
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
+      - name: Show runner info
+        run: |
+          set -eux
+          uname -m
+          nproc
+          df -h / | tail -1
+
       - name: Free disk space
-        # ubuntu-latest 仅 ~14GB 可用磁盘；bootstrap 解压 616MB + payload 512MB
-        # + Docker 镜像 + 中间产物极易爆盘。详见 docs/11-cicd-constraints.md
+        # 非致命：arm64 镜像的磁盘布局可能与 x86 不同，失败不应中断构建
+        continue-on-error: true
         uses: jlumbroso/free-disk-space@main
         with:
           tool-cache: true
@@ -44,13 +64,11 @@ jobs:
           haskell: true
           swap-storage: true
 
-      - name: Set up QEMU (arm64)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
-      - name: Pull Termux container
-        run: docker pull termux/termux-docker:latest
+      - name: Pull Termux container (native aarch64, no QEMU)
+        run: |
+          set -eux
+          docker pull --platform linux/arm64 termux/termux-docker:aarch64
+          docker image inspect termux/termux-docker:aarch64 --format '{{.Architecture}} {{.Os}}'
 
       - name: Stage build inputs
         run: |
@@ -61,23 +79,26 @@ jobs:
           cp scripts/fix_python_paths.sh buildin/
           cp scripts/build-payload-in-termux.sh buildin/
           cp patches/*.patch buildin/
-          # 容器内是非 root 用户，uid ≠ runner；挂载目录必须 world-writable，
-          # 否则容器写不进去（来源：termux-wheel-forge 实测注释）
+          # 容器内是非 root 用户（uid 1000），与 runner uid 不同；
+          # 挂载目录必须 world-writable，否则容器写不进去
           chmod -R a+rwX buildin dist
           ls -l buildin/
 
-      - name: Build Hermes venv inside Termux (QEMU)
+      - name: Build Hermes payload inside Termux container
         run: |
           set -eux
-          # 容器内 HOME=/data/data/com.termux/files/home
-          # 脚本把产物写到 $HOME/out，这里把它挂到宿主 dist/
-          docker run --platform linux/arm64 --name hermes-build \
+          # 关键参数说明：
+          #   --security-opt seccomp=unconfined  ARM 容器必需（personality() syscall）
+          #   --platform linux/arm64             防镜像 manifest 误标（已知问题）
+          #   位置参数 main/termux               会被 entrypoint.sh 透传给脚本
+          #                                      （-e 环境变量会被 su -i 清掉）
+          docker run --name hermes-build \
+            --platform linux/arm64 \
+            --security-opt seccomp=unconfined \
             -v "$PWD/buildin:/work:ro" \
             -v "$PWD/dist:/data/data/com.termux/files/home/out" \
-            -e HERMES_REF='${{ inputs.hermes_ref }}' \
-            -e HERMES_EXTRA='${{ inputs.extra }}' \
-            termux/termux-docker:latest \
-            bash /work/build-payload-in-termux.sh
+            termux/termux-docker:aarch64 \
+            bash /work/build-payload-in-termux.sh '${{ inputs.hermes_ref }}' '${{ inputs.extra }}'
           ls -lh dist/ || true
 
       - name: Fallback docker cp (in case bind mount failed)
