@@ -8,8 +8,10 @@ android {
 
     defaultConfig {
         applicationId "com.nousresearch.hermesandroid"
-        minSdk 24          // Termux bootstrap 要求 Android 7+；W^X 限制从 API 29 起需处理
-        targetSdk 28       // 关键：<=28 才允许从应用私有目录 execve（W^X 豁免）
+        minSdk 24          // Termux bootstrap 要求 Android 7+
+        targetSdk 28       // 关键：<=28 才有 untrusted_app_27 的 execve 豁免（W^X）。
+                           // 提到 >=29 会永久失去在 files/ 执行二进制的能力（SELinux neverallow）。
+                           // 代价：无法上架 Google Play。详见 docs/05-architecture-decisions.md
         versionCode 1
         versionName "1.0.0"
         ndk {
