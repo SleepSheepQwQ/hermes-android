@@ -198,7 +198,34 @@ payload)
         esac
       fi
 
-      # 4d) managed python 一致性：若软链指向 opt/tools，payload 内必须有该目录
+      # 4d) console script 的 shebang 检查（docs/18，阻断级）
+      #     pip 生成的 hermes/pip 等脚本原 shebang 指向 bootstrap python，
+      #     它**不激活 venv 的 site-packages** → `from hermes_cli.main import main`
+      #     会 ModuleNotFoundError。修复后应是 shell 包装（#!/bin/sh + exec venv python）。
+      cs="$ROOT/venv/bin/hermes"
+      if [ -f "$cs" ]; then
+        h1=$(head -1 "$cs")
+        case "$h1" in
+          '#!/bin/sh')
+            if grep -q 'readlink -f' "$cs"; then
+              ok "console script shebang 已改为 shell 包装（免疫路径搬迁）"
+            else
+              ok "console script shebang 是 #!/bin/sh"
+            fi ;;
+          *python*)
+            # 仍指向某个 python：必须指向 venv 自身，不能是 $PREFIX/usr/bin
+            if echo "$h1" | grep -q "files/usr/bin/python"; then
+              bad "console script shebang 指向 bootstrap python（$h1）→ hermes_cli 会找不到"
+            else
+              info "console script shebang: $h1"
+            fi ;;
+          *) info "console script shebang 形态未知: $h1" ;;
+        esac
+      else
+        bad "venv/bin/hermes 不存在"
+      fi
+
+      # 4e) managed python 一致性：若软链指向 opt/tools，payload 内必须有该目录
       if [ -L "$pybin" ]; then
         tgt=$(readlink "$pybin")
         case "$tgt" in
