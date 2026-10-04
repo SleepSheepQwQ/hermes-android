@@ -159,14 +159,11 @@ jobs:
           TASK=":app:assembleDebug"
           [ "${BUILD_TYPE:-debug}" = "release" ] && TASK=":app:assembleRelease"
 
-          # 优先用仓库内的 gradlew（若 gradle-wrapper.jar 缺失它会尝试现场生成）；
-          # 失败则回退到 setup-gradle 提供的 gradle。
-          if [ -x ./gradlew ] && ./gradlew --version >/dev/null 2>&1; then
-            ./gradlew "$TASK" --no-daemon --stacktrace
-          else
-            echo "gradlew 不可用，回退到系统 gradle"
-            gradle "$TASK" --no-daemon --stacktrace
-          fi
+          # 直接用 gradle/actions/setup-gradle 提供的 gradle。
+          # 不用仓库内的 gradlew：gradle-wrapper.jar 是二进制、未提交，
+          # 而「先跑 gradlew 生成 jar 再用它」的链路脆弱且副作用不可控。
+          # setup-gradle 已按 gradle-version 装好对应版本。
+          gradle "$TASK" --no-daemon --stacktrace
           find app/build/outputs -name '*.apk' -exec ls -lh {} \;
 
       - name: Verify APK signature
