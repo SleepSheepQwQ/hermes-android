@@ -164,14 +164,34 @@ jobs:
           gradle-version: '8.9'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install build-tools (apksigner)
         run: |
           set -eux
-          # setup-android 不预装 build-tools；apksigner 在其中
-          sdkmanager "build-tools;35.0.0" >/dev/null || sdkmanager --list | head -20
-          ls "$ANDROID_SDK_ROOT/build-tools/"
+          # 不用 android-actions/setup-android@v3：它内部会执行 `sdkmanager "tools"`，
+          # 而该包已被 Google 从 SDK 仓库移除 → "Failed to find package 'tools'" → exit 1。
+          # ubuntu-latest runner 本来就预装了完整 Android SDK，且我们在
+          # free-disk-space 里设了 android: false（未删 SDK），直接用即可。
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          [ -d "$SDK" ] || { echo "找不到预装 Android SDK（$SDK）"; exit 1; }
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          # cmdline-tools 的版本目录名不固定（16.0 / latest），逐个加入 PATH
+          for d in "$SDK"/cmdline-tools/*/bin; do
+            [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+          done
+          echo "$SDK/platform-tools" >> "$GITHUB_PATH"
+          ls "$SDK"
+
+      - name: Install SDK components (platform + build-tools)
+        run: |
+          set -eux
+          SDK="$ANDROID_SDK_ROOT"
+          SM=$(ls -d "$SDK"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          [ -n "$SM" ] || { echo "找不到 sdkmanager"; exit 1; }
+          # AGP 8.7.3 + compileSdk 35 需要 platform-35 与 build-tools 35.0.0
+          yes | "$SM" --licenses >/dev/null 2>&1 || true
+          "$SM" "platforms;android-35" "build-tools;35.0.0" >/dev/null
+          ls "$SDK/build-tools/"
+          ls "$SDK/platforms/"
 
       - name: Build APK
         env:
