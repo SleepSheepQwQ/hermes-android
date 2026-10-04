@@ -57,21 +57,53 @@ jobs:
           set -eux
           mkdir -p buildin dist
           cp scripts/trim_source.sh scripts/trim_venv.sh buildin/
+          cp scripts/fix_editable.sh buildin/
           cp scripts/build-payload-in-termux.sh buildin/
           cp patches/*.patch buildin/
+          # 容器内是非 root 用户，uid ≠ runner；挂载目录必须 world-writable，
+          # 否则容器写不进去（来源：termux-wheel-forge 实测注释）
+          chmod -R a+rwX buildin dist
           ls -l buildin/
 
       - name: Build Hermes venv inside Termux (QEMU)
         run: |
           set -eux
+          # 容器内 HOME=/data/data/com.termux/files/home
+          # 脚本把产物写到 $HOME/out，这里把它挂到宿主 dist/
           docker run --platform linux/arm64 --name hermes-build \
             -v "$PWD/buildin:/work:ro" \
-            -v "$PWD/dist:/data/data/com.termux/files/home/dist" \
+            -v "$PWD/dist:/data/data/com.termux/files/home/out" \
             -e HERMES_REF='${{ inputs.hermes_ref }}' \
             -e HERMES_EXTRA='${{ inputs.extra }}' \
             termux/termux-docker:latest \
             bash /work/build-payload-in-termux.sh
           ls -lh dist/ || true
+
+      - name: Fallback docker cp (in case bind mount failed)
+        if: always()
+        run: |
+          set -eux
+          if ! ls dist/*.tar.* >/dev/null 2>&1; then
+            echo "挂载目录无产物，尝试 docker cp"
+            docker cp "hermes-build:/data/data/com.termux/files/home/out/." dist/ || true
+          fi
+          docker rm -f hermes-build >/dev/null 2>&1 || true
+          ls -lh dist/ || true
+
+      - name: Normalize payload name
+        run: |
+          set -eux
+          cd dist
+          # 统一成 build-apk.yml 期望的名字
+          if [ -f hermes-payload.tar.zst ]; then
+            :
+          elif [ -f hermes-payload.tar.gz ]; then
+            :
+          else
+            f=$(ls *.tar.* | head -1)
+            cp "$f" hermes-payload.${f##*.} 2>/dev/null || cp "$f" hermes-payload.tar.gz
+          fi
+          ls -lh
 
       - name: Show artifact sizes
         run: |
@@ -81,7 +113,9 @@ jobs:
       - name: Smoke test payload
         run: |
           set -eux
-          bash scripts/smoke_test.sh payload dist/*.tar.zst
+          for f in dist/*.tar.zst dist/*.tar.gz; do
+            [ -f "$f" ] && bash scripts/smoke_test.sh payload "$f"
+          done
 
       - name: Upload payload (short-lived, job handoff only)
         # 注意：GitHub Actions Artifacts 在 Free 计划仅 500MB 总配额，
@@ -90,7 +124,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hermes-payload
-          path: dist/*.tar.zst
+          path: |
+            dist/*.tar.zst
+            dist/*.tar.gz
           retention-days: 1
 
       - name: Publish payload to Release
@@ -100,10 +136,11 @@ jobs:
         run: |
           set -eux
           TAG="payload-$(date -u +%Y%m%d)-${{ github.run_number }}"
+          FILES=$(ls dist/*.tar.zst dist/*.tar.gz 2>/dev/null || true)
+          [ -n "$FILES" ] || { echo "无产物可发布"; exit 1; }
           gh release create "$TAG" \
             --repo "${{ github.repository }}" \
             --title "payload $TAG" \
-            --notes "Hermes payload（源码+venv+tools），ref=${{ inputs.hermes_ref }}，extras=${{ inputs.extra }}" \
-            dist/*.tar.zst || \
-            gh release upload "$TAG" dist/*.tar.zst --repo "${{ github.repository }}" --clobber
-          sha256sum dist/*.tar.zst | tee dist/SHA256SUMS
+            --notes "Hermes sealed payload（源码+venv+tools），ref=${{ inputs.hermes_ref }}，extras=${{ inputs.extra }}" \
+            $FILES || \
+            gh release upload "$TAG" $FILES --repo "${{ github.repository }}" --clobber
