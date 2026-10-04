@@ -60,12 +60,12 @@ echo "==> manifest.json:"
 cat "$ROOT/manifest.json"
 echo
 
-echo "==> 校验：源码里 editable 的指向"
-if [ -f "$ROOT/venv/lib/python3.14/site-packages/__editable__.hermes_agent-0.0.0.pth" ]; then
-  echo "  发现 editable 安装的 .pth —— 其 finder 里写死了源码绝对路径，需要重写："
-  grep -o '/[^"]*hermes[^"]*' \
-    "$ROOT/venv/lib/python3.14/site-packages/__editable___hermes_agent_0_0_0_finder.py" 2>/dev/null | head -3 || true
-  echo "  → 由 fix_editable.sh 处理"
+echo "==> 校验：editable 安装情况"
+if [ -f "$ROOT/venv/lib/python3.14/site-packages/__editable___hermes_agent-0.0.0_finder.py" ] \
+   || ls "$ROOT"/venv/lib/python3.14/site-packages/__editable___*_finder.py >/dev/null 2>&1; then
+  echo "  发现 editable 安装（.pth + finder），需修复写死的绝对路径 → 交给 fix_editable.sh"
+else
+  echo "  非 editable 安装（源码已复制进 site-packages），无需修复"
 fi
 
 echo "==> 完成: $ROOT"
