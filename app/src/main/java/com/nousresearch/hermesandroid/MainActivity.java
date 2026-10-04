@@ -154,27 +154,37 @@ public class MainActivity extends AppCompatActivity {
                 File prefix = BootstrapInstaller.prefixDir(this);
                 File opt = BootstrapInstaller.optDir(this);
                 File bash = new File(prefix, "bin/bash");
-                File login = new File(prefix, "bin/login");
-                File exe = bash.exists() ? bash : login;
+                if (!bash.exists()) {
+                    ui.post(() -> {
+                        append("错误: " + bash + " 不存在，环境安装不完整");
+                        runBtn.setEnabled(true);
+                    });
+                    return;
+                }
 
                 // 优先用载荷里的 venv/bin/hermes
                 File hermes = new File(opt, "venv/bin/hermes");
+                String hermesCmd = hermes.exists()
+                        ? "\"" + hermes.getAbsolutePath() + "\""
+                        : "hermes";
 
-                ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath(), "-l");
+                // 用 --noprofile --norc：bootstrap 的 /etc/profile 里有大量
+                // com.termux 硬编码分支，会覆盖我们在 hermesEnv() 里精心设好的
+                // PATH / LD_LIBRARY_PATH，导致 libpython 找不到（审查 E）。
+                // 我们已显式提供全部必要变量，不需要 profile 帮忙。
+                ProcessBuilder pb = new ProcessBuilder(
+                        bash.getAbsolutePath(), "--noprofile", "--norc", "-c",
+                        "exec " + hermesCmd + " --version");
                 pb.environment().clear();
                 for (String kv : BootstrapInstaller.hermesEnv(this)) {
                     int i = kv.indexOf('=');
-                    pb.environment().put(kv.substring(0, i), kv.substring(i + 1));
+                    if (i > 0) pb.environment().put(kv.substring(0, i), kv.substring(i + 1));
                 }
                 pb.redirectErrorStream(true);
                 pb.directory(BootstrapInstaller.homeDir(this));
 
                 Process p = pb.start();
-                String cmd = hermes.exists()
-                        ? "\"" + hermes.getAbsolutePath() + "\" --version\nexit\n"
-                        : "hermes --version\nexit\n";
-                p.getOutputStream().write(cmd.getBytes());
-                p.getOutputStream().flush();
+                p.getOutputStream().close();   // 无 stdin，避免某些程序等待输入
 
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
                 String line;

@@ -129,6 +129,10 @@ rm -rf "$PAY"; mkdir -p "$PAY"
 
 cp -a "$BUILD/hermes-src" "$PAY/hermes-src"
 cp -a "$BUILD/hermes-src/venv" "$PAY/venv"
+# 关键：删掉源码目录内的 venv 副本（审查 M5）。
+# 否则 payload 里有两份 venv：体积翻倍，且 hermes-src/venv/pyvenv.cfg
+# 仍是构建机绝对路径，可能被某些路径解析优先命中 → 运行时行为不确定。
+rm -rf "$PAY/hermes-src/venv"
 
 # tools 在 Termux 容器里由 PM provision；若存在则一并打包
 if [ -d "$HOME_DIR/.hermes/tools" ]; then

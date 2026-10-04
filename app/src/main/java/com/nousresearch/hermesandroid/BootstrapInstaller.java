@@ -185,7 +185,18 @@ public final class BootstrapInstaller {
         }
 
         // 原子交付：staging -> prefix
-        if (prefix.exists()) deleteRecursively(prefix);
+        // 关键：**不要**在 rename 前先删旧的 prefix —— 若此刻进程被杀，
+        // 旧环境已毁、新的还没就位，两头空（审查 D）。
+        // 正确顺序：旧 prefix 先改名备份 → rename staging → 成功后才删备份。
+        if (prefix.exists()) {
+            File bak = new File(prefix.getParentFile(), prefix.getName() + ".bak");
+            deleteRecursively(bak);
+            if (!prefix.renameTo(bak)) {
+                // 备份改名都失败，只能退回删除（此时 staging 仍完整）
+                Log.w(TAG, "旧 prefix 备份失败，改为直接删除");
+                deleteRecursively(prefix);
+            }
+        }
         if (!staging.renameTo(prefix)) {
             Log.w(TAG, "renameTo 失败，退化为逐项移动");
             //noinspection ResultOfMethodCallIgnored
@@ -200,11 +211,34 @@ public final class BootstrapInstaller {
             }
             deleteRecursively(staging);
         }
+        // 新的已就位，清理备份
+        deleteRecursively(new File(prefix.getParentFile(), prefix.getName() + ".bak"));
 
         // Termux 脚本依赖 $PREFIX/tmp 存在
         File tmp = new File(prefix, "tmp");
         if (!tmp.isDirectory()) //noinspection ResultOfMethodCallIgnored
             tmp.mkdirs();
+
+        // second-stage 被我们跳过，它原本会建 /etc/resolv.conf。
+        // 没有它，DNS 解析全废 → hermes 调 API 直接失败（审查 F9）。
+        try {
+            File etc = new File(prefix, "etc");
+            if (!etc.isDirectory()) //noinspection ResultOfMethodCallIgnored
+                etc.mkdirs();
+            File resolv = new File(etc, "resolv.conf");
+            if (!resolv.exists()) {
+                // Android 的 DNS 走 netd，应用无法直接读 /etc/resolv.conf；
+                // 用公共 DNS 兜底，保证首启能联网。
+                writeText(resolv, "nameserver 8.8.8.8\nnameserver 1.1.1.1\n");
+            }
+            // hosts 同理（某些工具依赖 localhost 解析）
+            File hosts = new File(etc, "hosts");
+            if (!hosts.exists()) {
+                writeText(hosts, "127.0.0.1 localhost\n::1 localhost\n");
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "写 resolv.conf/hosts 失败（不影响本地运行）", e);
+        }
 
         // HERMES_HOME（$HOME/.hermes）必须预先存在：
         // 见 docs/08 —— 该目录是 Hermes 的用户数据根（sessions/logs/skills…），
@@ -224,12 +258,15 @@ public final class BootstrapInstaller {
      * 目标可能是**相对路径**（相对链接所在目录解析），链接名常带 `./` 前缀。
      *
      * 实现要点：
-     *  - 用 java.nio 的 Files.createSymbolicLink 而不是 fork `ln`：
-     *    bootstrap 有约 1551 条软链，逐个 fork 一个进程在手机上极慢；
+     *  - 用 android.system.Os.symlink（API 21+）而不是 java.nio.Files.createSymbolicLink：
+     *    后者是 **API 26+**，minSdk=24 在 Android 7.0/7.1 上会抛 NoSuchMethodError。
+     *  - 不用 fork `ln`：bootstrap 有约 1551 条软链，逐个 fork 在手机上极慢；
      *    而且首启动时进程 PATH 里还没有 $PREFIX/bin，裸名 `ln` 会直接失败。
      *  - target 原样写入（不解析），与 `ln -s <target> <link>` 语义一致。
+     *  - **失败必须致命**：软链断了（bin/sh、lib*.so）整个 shell 起不来，
+     *    绝不能写出 "安装成功" 标记让用户以为装好了。
      */
-    private static void rebuildSymlinks(File prefix, String content) {
+    private static void rebuildSymlinks(File prefix, String content) throws IOException {
         int ok = 0, fail = 0;
         java.nio.file.Path prefixPath = prefix.toPath().toAbsolutePath().normalize();
         for (String line : content.split("\n")) {
@@ -252,9 +289,10 @@ public final class BootstrapInstaller {
                     Log.w(TAG, "跳过越界软链: " + linkPath);
                     continue;
                 }
-                java.nio.file.Files.deleteIfExists(linkAbs);
-                java.nio.file.Files.createSymbolicLink(linkAbs,
-                        java.nio.file.Paths.get(target));
+                // 重建前先删（可能是上一轮遗留）
+                //noinspection ResultOfMethodCallIgnored
+                linkAbs.toFile().delete();
+                android.system.Os.symlink(target, linkAbs.toString());
                 ok++;
             } catch (Exception ex) {
                 fail++;
@@ -262,6 +300,20 @@ public final class BootstrapInstaller {
             }
         }
         Log.i(TAG, "软链重建: 成功 " + ok + " 条" + (fail > 0 ? "，失败 " + fail + " 条" : ""));
+
+        // 关键软链白名单：缺一不可，否则 shell 起不来
+        String[] critical = {"bin/sh", "bin/bash", "lib/libandroid-support.so"};
+        for (String c : critical) {
+            File f = new File(prefix, c);
+            if (!f.exists()) {
+                throw new IOException("关键软链缺失: " + c + "（软链失败 " + fail + " 条）");
+            }
+        }
+        // 有任何失败就整体失败：1551 条里断几条往往意味着系统性错误
+        // （例如文件系统不支持 symlink、路径非法），继续下去只会得到半死环境。
+        if (fail > 0) {
+            throw new IOException("软链重建失败 " + fail + " 条，安装中止");
+        }
     }
 
     private static void setExecutableRecursive(File dir) {
@@ -292,6 +344,12 @@ public final class BootstrapInstaller {
         return bos.toString("UTF-8");
     }
 
+    private static void writeText(File f, String text) throws IOException {
+        try (OutputStream os = new FileOutputStream(f)) {
+            os.write(text.getBytes("UTF-8"));
+        }
+    }
+
     private static void copy(InputStream in, OutputStream out) throws IOException {
         byte[] buf = new byte[65536];
         int n;
@@ -320,27 +378,72 @@ public final class BootstrapInstaller {
         String p = prefixDir(ctx).getAbsolutePath();
         String h = homeDir(ctx).getAbsolutePath();
         String o = optDir(ctx).getAbsolutePath();
+        String venv = o + "/venv";
         return new String[]{
                 "PREFIX=" + p,
                 "TERMUX_PREFIX=" + p,
                 "HOME=" + h,
                 "HERMES_HOME=" + h + "/.hermes",
                 // 预置载荷布局：$opt/{manifest.json,hermes-src/,venv/,tools/}
-                "HERMES_RUNTIME_DIR=" + o + "/tools",
+                // 注意：优先读 manifest.json 的 store 字段，与 pm/environments.py 的
+                // store_root() 语义保持一致；读不到才回退到 "tools"。
+                "HERMES_RUNTIME_DIR=" + o + "/" + manifestStore(o, "tools"),
                 "HERMES_DISABLE_LAZY_INSTALLS=1",
-                "PATH=" + p + "/bin:" + h + "/.local/bin:" + o + "/venv/bin:"
+                "PATH=" + p + "/bin:" + h + "/.local/bin:" + venv + "/bin:"
                         + o + "/tools/bin:" + files + "/bin",
                 "LD_LIBRARY_PATH=" + buildLibraryPath(ctx),
                 "TMPDIR=" + p + "/tmp",
                 "TERM=xterm-256color",
                 "LANG=en_US.UTF-8",
-                "SHELL=" + p + "/bin/login",
+                "SHELL=" + p + "/bin/bash",
                 "ANDROID_DATA_ROOT=" + files.getAbsolutePath(),
                 // Termux 兼容变量
                 "TERMUX_APP_PACKAGE=" + ctx.getPackageName(),
                 "TERMUX_VERSION=0.118.3",
                 "TERMUX_MAIN_PACKAGE_FORMAT=debian",
+                // venv 的 pyvenv.cfg home= 指向 bootstrap 的 python；
+                // 显式给 PYTHONHOME 会在某些场景干扰 venv 的 base_prefix 推导，
+                // 因此**不设** PYTHONHOME，只保证 lib-dynload 在 LD_LIBRARY_PATH 里
+                // （见 buildLibraryPath 的 lib-dynload 追加逻辑）。
+                "PYTHONNOUSERSITE=1",
+                "SSL_CERT_FILE=" + p + "/etc/tls/cert.pem",
+                "CURL_CA_BUNDLE=" + p + "/etc/tls/cert.pem",
+                "GIT_SSL_CAINFO=" + p + "/etc/tls/cert.pem",
         };
+    }
+
+    /** 从 <opt>/manifest.json 读 store 字段；失败回退 fallback。 */
+    private static String manifestStore(String opt, String fallback) {
+        try {
+            File mf = new File(opt, "manifest.json");
+            if (!mf.isFile()) return fallback;
+            String txt = readAll(new java.io.FileInputStream(mf));
+            // 极简解析：找 "store" : "xxx"（不引入 JSON 库，避免额外依赖）
+            int i = txt.indexOf("\"store\"");
+            if (i < 0) return fallback;
+            int c = txt.indexOf(':', i);
+            if (c < 0) return fallback;
+            int q1 = txt.indexOf('"', c);
+            if (q1 < 0) return fallback;
+            int q2 = txt.indexOf('"', q1 + 1);
+            if (q2 < 0) return fallback;
+            String v = txt.substring(q1 + 1, q2);
+            return v.isEmpty() ? fallback : v;
+        } catch (Exception e) {
+            Log.w(TAG, "读 manifest.store 失败，回退 " + fallback, e);
+            return fallback;
+        }
+    }
+
+    /** 探测 <venv>/lib/python3.X，返回目录名（如 "python3.14"）；找不到返回 null。 */
+    private static String detectVenvPythonDir(String venv) {
+        File lib = new File(venv, "lib");
+        File[] kids = lib.listFiles();
+        if (kids == null) return null;
+        for (File k : kids) {
+            if (k.isDirectory() && k.getName().startsWith("python3.")) return k.getName();
+        }
+        return null;
     }
 
     /**
@@ -367,6 +470,15 @@ public final class BootstrapInstaller {
             if (new File(d).isDirectory()) sb.append(':').append(d);
         }
 
+        // **关键**：venv 的 C 扩展（_struct/_ctypes/select/_hashlib…）都在
+        // venv/lib/python3.X/lib-dynload 下，CPython 启动时会 dlopen 它们。
+        // 该目录不在 LD_LIBRARY_PATH 里就会 ModuleNotFoundError（审查 S1）。
+        String venvPy = detectVenvPythonDir(o + "/venv");
+        if (venvPy != null) {
+            File dyn = new File(o + "/venv/lib/" + venvPy + "/lib-dynload");
+            if (dyn.isDirectory()) sb.append(':').append(dyn.getAbsolutePath());
+        }
+
         // 扫描 tools/ 下 managed 工具的 usr/lib（版本号带哈希，必须扫）
         File tools = new File(o, "tools");
         File[] toolDirs = tools.listFiles();
@@ -378,6 +490,17 @@ public final class BootstrapInstaller {
                 if (usrLib.isDirectory()) sb.append(':').append(usrLib.getAbsolutePath());
                 File plainLib = new File(t, "lib");
                 if (plainLib.isDirectory()) sb.append(':').append(plainLib.getAbsolutePath());
+                // managed python 的 lib-dynload 同样要纳入
+                File pyLib = new File(t, "lib");
+                File[] pyKids = pyLib.listFiles();
+                if (pyKids != null) {
+                    for (File pk : pyKids) {
+                        if (pk.isDirectory() && pk.getName().startsWith("python3.")) {
+                            File dyn2 = new File(pk, "lib-dynload");
+                            if (dyn2.isDirectory()) sb.append(':').append(dyn2.getAbsolutePath());
+                        }
+                    }
+                }
             }
         }
 

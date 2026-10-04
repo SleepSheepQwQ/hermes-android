@@ -219,11 +219,25 @@ public final class PayloadInstaller {
         return "unknown";
     }
 
-    /** 若 staging 下只有一个目录，把它下移一层（处理打包时多包了一层）。 */
+    /**
+     * 若 staging 下只有一个目录，把它下移一层（处理打包时多包了一层）。
+     *
+     * 修正：不能只看"只有一个目录"。payload 正常顶层就有 hermes-src/venv/tools
+     * 三个目录 + manifest.json；但如果打包时多包了一层 `payload/`，
+     * 顶层会只有一个目录。**反之**，若顶层恰好只剩 tools/（异常打包），
+     * 原来的逻辑会把 tools/ 内容错移到顶层，结构彻底损坏。
+     * 因此改为：只有当那个唯一子目录**本身包含 manifest.json**（说明它才是真正的
+     * payload 根）时才下移。
+     */
     private static void flattenSingleDir(File staging) throws IOException {
         File[] kids = staging.listFiles();
         if (kids == null || kids.length != 1 || !kids[0].isDirectory()) return;
         File inner = kids[0];
+        // 仅当内层目录自己带 manifest.json 时，才认定它是被多包的一层
+        if (!new File(inner, "manifest.json").isFile()) {
+            Log.w(TAG, "顶层单目录 " + inner.getName() + " 无 manifest.json，不下移（避免结构损坏）");
+            return;
+        }
         File[] innerKids = inner.listFiles();
         if (innerKids == null) return;
         for (File k : innerKids) {

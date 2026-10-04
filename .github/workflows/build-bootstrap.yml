@@ -14,7 +14,11 @@ on:
       extra_packages:
         description: "额外附加包（空格分隔）"
         required: false
-        default: "python git ripgrep ffmpeg nodejs-lts"
+        # 注意：zstd 是**必需**的 —— payload 用 `tar --zstd` 打包，
+        # 设备侧 PayloadInstaller 要调 bootstrap 的 tar 解压 .tar.zst。
+        # 缺 zstd 会导致首次启动解压直接失败（tar 报 "zstd: not found"）。
+        # 另：ca-certificates + openssl 保证 hermes 首启能访问 HTTPS API。
+        default: "python git ripgrep ffmpeg nodejs-lts zstd ca-certificates openssl"
 
 permissions:
   contents: write

@@ -127,6 +127,21 @@ jobs:
           echo "bootstrap=$bs bytes, payload=$pl bytes"
           [ "$bs" -gt 50000000 ] || { echo "bootstrap 体积异常（$bs）"; exit 1; }
           [ "$pl" -gt 20000000 ] || { echo "payload 体积异常（$pl）"; exit 1; }
+
+          # 字节级完整性（审查 A1）：伪 .so 必须是**未被动过的原始压缩包**。
+          # AGP 的 strip/对齐若误处理这两个文件，体积断言查不出来，但设备侧解压必崩。
+          python3 - <<'PY'
+          import zipfile, sys
+          p = "app/src/main/jniLibs/arm64-v8a/libtermux-bootstrap.so"
+          with zipfile.ZipFile(p) as z:
+              bad = z.testzip()
+              if bad:
+                  print("bootstrap zip 损坏于:", bad); sys.exit(1)
+          print("OK: bootstrap zip 结构完整")
+          PY
+          # 与 Release 上的原始文件逐字节比对
+          sha256sum "$JNI/libtermux-bootstrap.so" | awk '{print $1"  libtermux-bootstrap.so"}' > /tmp/bs.sha
+          (cd artifacts && sha256sum -c /tmp/bs.sha)
           ls -lh "$JNI"
 
       - name: Set up JDK 17
