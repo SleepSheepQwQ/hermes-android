@@ -141,9 +141,14 @@ jobs:
                   print("bootstrap zip 损坏于:", bad); sys.exit(1)
           print("OK: bootstrap zip 结构完整")
           PY
-          # 与 Release 上的原始文件逐字节比对
-          sha256sum "$JNI/libtermux-bootstrap.so" | awk '{print $1"  libtermux-bootstrap.so"}' > /tmp/bs.sha
-          (cd artifacts && sha256sum -c /tmp/bs.sha)
+          # 字节级完整性（审查 A1）：伪装 .so 必须与 Release 原始 zip **逐字节相同**。
+          # 先校验下载的 zip 自身 sha256，再比对 .so 与 zip 的哈希是否一致
+          # （AGP 或任何中间步骤若动过文件，这里就会暴露）。
+          (cd artifacts && sha256sum -c bootstrap-aarch64.zip.sha256)
+          a=$(sha256sum "$JNI/libtermux-bootstrap.so" | cut -d' ' -f1)
+          b=$(sha256sum artifacts/bootstrap-aarch64.zip | cut -d' ' -f1)
+          [ "$a" = "$b" ] || { echo "!! 伪装 .so 与原始 zip 不一致（$a vs $b）"; exit 1; }
+          echo "OK: 伪装 .so 与原始 bootstrap zip 字节一致"
           ls -lh "$JNI"
 
       - name: Set up JDK 17
