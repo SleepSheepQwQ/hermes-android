@@ -49,12 +49,27 @@ fi
 cd "$BUILD/hermes-src"
 
 echo "==> 应用 Termux 必需补丁"
+PATCH_FAIL=0
 for p in "$WORK"/*.patch; do
   [ -f "$p" ] || continue
   echo "  applying $(basename "$p")"
-  git apply "$p" 2>/dev/null || patch -p1 < "$p" 2>/dev/null \
-    || echo "  WARN: 补丁未应用（可能已包含）"
+  if git apply "$p" 2>/dev/null; then
+    echo "    ok (git apply)"
+  elif patch -p1 < "$p" >/dev/null 2>&1; then
+    echo "    ok (patch -p1)"
+  elif git apply --reverse --check "$p" 2>/dev/null; then
+    echo "    已在源码中（跳过）"
+  else
+    echo "    !! 补丁应用失败：$(basename "$p")"
+    PATCH_FAIL=$((PATCH_FAIL+1))
+  fi
 done
+if [ "$PATCH_FAIL" -gt 0 ]; then
+  # 补丁失败意味着 psutil 可选导入 / PM pin-only 容错缺失，
+  # 会在运行期崩溃。宁可失败，不要带着病打包。
+  echo "!! 有 $PATCH_FAIL 个补丁未能应用，终止构建" >&2
+  exit 1
+fi
 
 echo "==> 建 venv 并安装 .[$HERMES_EXTRA]"
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || echo 34)"

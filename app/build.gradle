@@ -50,11 +50,12 @@ android {
     }
 
     // 关键：把 lib*.so 原样打包，不做二次压缩也不 strip，
-    // 否则 bootstrap zip 会被破坏（termux-app 的做法）。
+    // 否则 bootstrap zip / payload tar 会被破坏（termux-app 的做法）。
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            keepDebugSymbols += ["**/*.so"]
+            // 注意：不要加 keepDebugSymbols —— 我们的 lib*.so 是 zip/tar 伪装，
+            // 不是 ELF；让 AGP 去 strip 会失败或行为不确定。
         }
         resources {
             excludes += ["META-INF/*"]

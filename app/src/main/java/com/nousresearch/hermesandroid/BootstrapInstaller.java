@@ -193,6 +193,13 @@ public final class BootstrapInstaller {
         if (!tmp.isDirectory()) //noinspection ResultOfMethodCallIgnored
             tmp.mkdirs();
 
+        // HERMES_HOME（$HOME/.hermes）必须预先存在：
+        // 见 docs/08 —— 该目录是 Hermes 的用户数据根（sessions/logs/skills…），
+        // 首启时若父目录缺失，部分初始化路径会失败。
+        File hermesHome = new File(homeDir(ctx), ".hermes");
+        if (!hermesHome.isDirectory()) //noinspection ResultOfMethodCallIgnored
+            hermesHome.mkdirs();
+
         // 全部成功后才写标记
         writeStamp(ctx, STAMP_BOOTSTRAP);
         Log.i(TAG, "bootstrap 安装完成 -> " + prefix);
@@ -310,7 +317,7 @@ public final class BootstrapInstaller {
                 "HERMES_DISABLE_LAZY_INSTALLS=1",
                 "PATH=" + p + "/bin:" + h + "/.local/bin:" + o + "/venv/bin:"
                         + o + "/tools/bin:" + files + "/bin",
-                "LD_LIBRARY_PATH=" + p + "/lib:" + o + "/tools/lib",
+                "LD_LIBRARY_PATH=" + buildLibraryPath(ctx),
                 "TMPDIR=" + p + "/tmp",
                 "TERM=xterm-256color",
                 "LANG=en_US.UTF-8",
@@ -321,6 +328,56 @@ public final class BootstrapInstaller {
                 "TERMUX_VERSION=0.118.3",
                 "TERMUX_MAIN_PACKAGE_FORMAT=debian",
         };
+    }
+
+    /**
+     * 组装 LD_LIBRARY_PATH。
+     *
+     * 为什么不能写死：payload 里的库分布在多个位置，且随打包形态变化：
+     *   - bootstrap 的库            <files>/usr/lib
+     *   - managed python 自带的库   <files>/opt/tools/python-<ver>/data/data/com.termux/files/usr/lib
+     *   - Hermes runtime-libs       <files>/opt/runtime-libs/lib
+     * managed python 的 ELF RUNPATH 硬编码 /data/data/com.termux/files/usr/lib，
+     * 若不把它的真实 lib 目录加进来，libpython3.14.so 会找不到（docs/13）。
+     * 因此这里**动态扫描** payload 下所有存在的 lib 目录，全部纳入。
+     */
+    private static String buildLibraryPath(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+        String p = prefixDir(ctx).getAbsolutePath();
+        String o = optDir(ctx).getAbsolutePath();
+
+        sb.append(p).append("/lib");
+
+        // 固定候选
+        String[] fixed = {o + "/runtime-libs/lib", o + "/tools/lib", o + "/venv/lib"};
+        for (String d : fixed) {
+            if (new File(d).isDirectory()) sb.append(':').append(d);
+        }
+
+        // 扫描 tools/ 下 managed 工具的 usr/lib（版本号带哈希，必须扫）
+        File tools = new File(o, "tools");
+        File[] toolDirs = tools.listFiles();
+        if (toolDirs != null) {
+            for (File t : toolDirs) {
+                if (!t.isDirectory()) continue;
+                File usrLib = new File(t,
+                        "data/data/com.termux/files/usr/lib");
+                if (usrLib.isDirectory()) sb.append(':').append(usrLib.getAbsolutePath());
+                File plainLib = new File(t, "lib");
+                if (plainLib.isDirectory()) sb.append(':').append(plainLib.getAbsolutePath());
+            }
+        }
+
+        // 扫描 payload 内任意层级的 python lib（兜底）
+        File[] optKids = new File(o).listFiles();
+        if (optKids != null) {
+            for (File k : optKids) {
+                File lib = new File(k, "lib");
+                if (lib.isDirectory()) sb.append(':').append(lib.getAbsolutePath());
+            }
+        }
+
+        return sb.toString();
     }
 
     /** 载荷（源码 + venv/tools）是否已就位 */

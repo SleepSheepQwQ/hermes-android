@@ -32,6 +32,11 @@ permissions:
 jobs:
   package:
     runs-on: ubuntu-latest
+    # 守卫：workflow_run 触发时必须上游成功才继续，否则会拉到旧的 Release 产物
+    # （types: [completed] 包含 failure，不加守卫会在上游失败时也跑）
+    if: |
+      github.event_name != 'workflow_run'
+      || github.event.workflow_run.conclusion == 'success'
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -97,12 +102,28 @@ jobs:
           set -eux
           JNI=app/src/main/jniLibs/arm64-v8a
           mkdir -p "$JNI"
+
           # 伪装成 .so：Android 安装时会把 lib/<abi>/*.so 原样解压到
           # nativeLibraryDir（只读），从而规避 assets 压缩与 W^X exec 限制。
+          [ -f artifacts/bootstrap-aarch64.zip ] || { echo "缺少 bootstrap"; exit 1; }
           cp artifacts/bootstrap-aarch64.zip "$JNI/libtermux-bootstrap.so"
-          for f in artifacts/*.tar.zst artifacts/*.tar.gz; do
-            [ -f "$f" ] && cp "$f" "$JNI/libhermes-payload.so"
+
+          # payload：只取**一个**（同时存在 .tar.zst 与 .tar.gz 时，
+          # 循环会让后者覆盖前者，结果不确定）
+          PAYLOAD=""
+          for c in artifacts/*.tar.zst artifacts/*.tar.gz; do
+            [ -f "$c" ] && { PAYLOAD="$c"; break; }
           done
+          [ -n "$PAYLOAD" ] || { echo "缺少 payload"; exit 1; }
+          cp "$PAYLOAD" "$JNI/libhermes-payload.so"
+
+          # 断言：两个载荷都必须非空且达到最小体积，否则会构建出
+          # 「能装上但跑不起来」的空壳 APK
+          bs=$(stat -c%s "$JNI/libtermux-bootstrap.so")
+          pl=$(stat -c%s "$JNI/libhermes-payload.so")
+          echo "bootstrap=$bs bytes, payload=$pl bytes"
+          [ "$bs" -gt 50000000 ] || { echo "bootstrap 体积异常（$bs）"; exit 1; }
+          [ "$pl" -gt 20000000 ] || { echo "payload 体积异常（$pl）"; exit 1; }
           ls -lh "$JNI"
 
       - name: Set up JDK 17

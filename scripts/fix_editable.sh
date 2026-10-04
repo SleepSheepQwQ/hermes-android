@@ -58,12 +58,27 @@ if not mapping:
     print("  MAPPING 为空或缺失，跳过")
     sys.exit(0)
 
-# 2) 反推旧源码根：所有值的最长公共前缀的父目录
-def old_root_of(vals):
-    sample = vals[0]
-    return sample.rsplit("/", 1)[0]
+# 2) 反推旧源码根：**所有值的最长公共前缀目录**
+#    注意：不能只取第一个值——MAPPING 里可能混有不同深度的路径
+#    （例如 'a': '.../workspace/a' 与 'b.c': '.../workspace/b/c'），
+#    取首元素会把 'b.c' 的根误判成 '.../workspace/b'，
+#    导致 v[len(old_root):] 截断错误、绝对路径泄漏。
+def common_root(vals):
+    import os
+    parts = [v.split("/") for v in vals]
+    common = []
+    for segs in zip(*parts):
+        if len(set(segs)) == 1:
+            common.append(segs[0])
+        else:
+            break
+    root = "/".join(common)
+    # 若公共前缀恰是某个完整路径（说明没有共同父目录），回退一层
+    if root in vals:
+        root = root.rsplit("/", 1)[0]
+    return root or "/"
 
-old_root = old_root_of(list(mapping.values()))
+old_root = common_root(list(mapping.values()))
 print(f"  探测到旧源码根: {old_root}")
 
 # 3) 重建为**运行时按相对位置解析**的字典。
