@@ -135,8 +135,16 @@ jobs:
       - name: Smoke test payload
         run: |
           set -eux
-          for f in dist/*.tar.zst dist/*.tar.gz; do
-            [ -f "$f" ] && bash scripts/smoke_test.sh payload "$f"
+          # 注意：glob 无匹配时字面量会被传给 [ -f ]，返回 1 会让 set -e 直接退出。
+          # 用 shopt nullglob 让无匹配的 glob 展开为空。
+          shopt -s nullglob
+          files=(dist/*.tar.zst dist/*.tar.gz)
+          shopt -u nullglob
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有找到 payload 产物"; exit 1
+          fi
+          for f in "${files[@]}"; do
+            bash scripts/smoke_test.sh payload "$f"
           done
 
       - name: Upload payload (short-lived, job handoff only)
