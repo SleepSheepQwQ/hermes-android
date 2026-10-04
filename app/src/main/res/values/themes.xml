@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.Material3.DayNight" parent="Theme.Material3.DayNight.NoActionBar" />
+    <!--
+      自定义主题名，父主题用 Material3 的 NoActionBar。
+      注意：不要把主题命名为 Theme.Material3.DayNight —— 那与库内资源同名，
+      会造成重复定义；且一旦库未导出该父样式就直接编译失败。
+    -->
+    <style name="Theme.HermesAndroid" parent="Theme.Material3.DayNight.NoActionBar" />
 </resources>

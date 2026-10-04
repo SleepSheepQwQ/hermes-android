@@ -153,16 +153,15 @@ jobs:
           BUILD_TYPE: ${{ inputs.build_type }}
         run: |
           set -eux
-          # 生成 wrapper（仓库不提交二进制 jar，由 CI 现生成）
-          gradle wrapper --gradle-version 8.9 || true
-          chmod +x gradlew 2>/dev/null || true
-
           TASK=":app:assembleDebug"
           [ "${BUILD_TYPE:-debug}" = "release" ] && TASK=":app:assembleRelease"
 
-          if [ -x ./gradlew ]; then
+          # 优先用仓库内的 gradlew（若 gradle-wrapper.jar 缺失它会尝试现场生成）；
+          # 失败则回退到 setup-gradle 提供的 gradle。
+          if [ -x ./gradlew ] && ./gradlew --version >/dev/null 2>&1; then
             ./gradlew "$TASK" --no-daemon --stacktrace
           else
+            echo "gradlew 不可用，回退到系统 gradle"
             gradle "$TASK" --no-daemon --stacktrace
           fi
           find app/build/outputs -name '*.apk' -exec ls -lh {} \;
