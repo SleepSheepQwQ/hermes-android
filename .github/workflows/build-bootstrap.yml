@@ -28,6 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Checkout hermes-android (for scripts/)
+        uses: actions/checkout@v4
+        with:
+          path: self
+
       - name: Checkout termux-packages
         uses: actions/checkout@v4
         with:
@@ -70,7 +75,7 @@ jobs:
         working-directory: termux-packages
         run: |
           set -eux
-          bash "$GITHUB_WORKSPACE/scripts/smoke_test.sh" bootstrap bootstrap-aarch64.zip bootstrap-aarch64.zip.sha256
+          bash "$GITHUB_WORKSPACE/self/scripts/smoke_test.sh" bootstrap bootstrap-aarch64.zip bootstrap-aarch64.zip.sha256
 
       - name: Upload bootstrap artifact (short-lived, job handoff only)
         # Artifacts 在 Free 计划仅 500MB 配额，bootstrap 203MB 已占近半，
