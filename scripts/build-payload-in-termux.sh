@@ -111,6 +111,13 @@ echo "==> 修复 editable 绝对路径（docs/09）"
 termux_run bash "$WORK/fix_editable.sh" "$PAY" || {
   echo "!! fix_editable 失败，payload 搬迁后会崩"; exit 1; }
 
+echo "==> 修复 venv 的 Python 路径（软链 + pyvenv.cfg home=）"
+# 关键：venv/bin/python 是指向构建机绝对路径的软链，pyvenv.cfg 的 home= 同理。
+# 不重写则搬进 APK 后解释器找不到、标准库找不到（docs/13）。
+termux_run bash "$WORK/fix_python_paths.sh" "$PAY" \
+  "/data/data/com.nousresearch.hermesandroid/files/opt" || {
+  echo "!! fix_python_paths 失败"; exit 1; }
+
 echo "==> 校验 payload 自包含"
 ( cd "$PAY" && LD_LIBRARY_PATH=/data/data/com.termux/files/usr/lib \
     ./venv/bin/python -c "import hermes_constants; print('payload 自包含 OK')" ) || {

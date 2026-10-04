@@ -145,6 +145,42 @@ payload)
       if [ "$leaks" -eq 0 ]; then ok "editable finder 无绝对路径泄漏"
       else bad "editable finder 仍有 $leaks 处绝对路径（需 fix_editable.sh）"; fi
 
+      # 4b) venv 的 Python 路径检查（docs/13）
+      #     venv/bin/python 若是指向构建机绝对路径的软链，搬走后必断
+      pybin="$ROOT/venv/bin/python"
+      if [ -L "$pybin" ]; then
+        tgt=$(readlink "$pybin")
+        case "$tgt" in
+          /*) 
+            # 绝对软链：必须指向 APK 目标前缀，否则断链
+            if echo "$tgt" | grep -q "^/data/data/com.nousresearch.hermesandroid/"; then
+              ok "venv/bin/python 软链已重写到 APK 路径"
+            else
+              bad "venv/bin/python -> $tgt（构建机路径，搬走后断链；需 fix_python_paths.sh）"
+            fi
+            ;;
+          *) ok "venv/bin/python 是相对软链" ;;
+        esac
+      elif [ -e "$pybin" ]; then
+        info "venv/bin/python 是实体文件（非软链）"
+      else
+        bad "venv/bin/python 不存在"
+      fi
+
+      # 4c) pyvenv.cfg 的 home= 检查
+      cfg="$ROOT/venv/pyvenv.cfg"
+      if [ -f "$cfg" ]; then
+        h=$(grep '^home' "$cfg" 2>/dev/null | head -1 | sed 's/^home *= *//')
+        case "$h" in
+          /data/data/com.nousresearch.hermesandroid/*)
+            ok "pyvenv.cfg home= 已重写到 APK 路径" ;;
+          "")
+            bad "pyvenv.cfg 缺少 home= 行" ;;
+          *)
+            bad "pyvenv.cfg home=$h（构建机路径，搬走后解释器找不到 stdlib）" ;;
+        esac
+      fi
+
       # 5) Python 能否从 payload 内部导入源码
       if [ -x "$ROOT/venv/bin/python" ]; then
         if (cd "$ROOT" && LD_LIBRARY_PATH="${PREFIX:-/data/data/com.termux/files/usr}/lib" \

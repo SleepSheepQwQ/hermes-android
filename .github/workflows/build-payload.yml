@@ -58,6 +58,7 @@ jobs:
           mkdir -p buildin dist
           cp scripts/trim_source.sh scripts/trim_venv.sh buildin/
           cp scripts/fix_editable.sh buildin/
+          cp scripts/fix_python_paths.sh buildin/
           cp scripts/build-payload-in-termux.sh buildin/
           cp patches/*.patch buildin/
           # 容器内是非 root 用户，uid ≠ runner；挂载目录必须 world-writable，
