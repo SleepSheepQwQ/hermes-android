@@ -19,10 +19,30 @@ android {
         }
     }
 
+    // 签名：密钥绝不进仓库。CI 从 Secret 解码 keystore 到 $RUNNER_TEMP，
+    // 并把路径与口令通过环境变量传入（见 docs/11-cicd-constraints.md）。
+    signingConfigs {
+        release {
+            def ksPath = System.getenv("HERMES_KEYSTORE_PATH")
+            if (ksPath != null && file(ksPath).exists()) {
+                storeFile file(ksPath)
+                storePassword System.getenv("HERMES_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("HERMES_KEY_ALIAS") ?: "hermes"
+                keyPassword System.getenv("HERMES_KEY_PASSWORD")
+                // v1 必需：老设备可能只认 v1 签名
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.debug   // 首次构建用 debug 签名，后续换成 CI secret
+            // 有正式 keystore 用 release 签名，否则回退 debug（便于本地/CI 首次跑通）
+            signingConfig (System.getenv("HERMES_KEYSTORE_PATH") != null
+                    ? signingConfigs.release : signingConfigs.debug)
         }
         debug {
             // 保留调试信息
@@ -52,6 +72,7 @@ android {
 
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.core:core:1.15.0'          // NotificationCompat（SetupService 用）
     implementation 'com.google.android.material:material:1.12.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.2.0'
 }

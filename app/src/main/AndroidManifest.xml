@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 首次启动可选联网安装依赖；READ/WRITE 用于导入导出配置 -->
+    <!-- 首次启动可选联网（若未预置依赖） -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- 首启解压耗时长，必须用前台 Service（Android 14+ 需声明具体类型） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 前台通知需运行时申请 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 只支持 arm64（bootstrap 为 aarch64） -->
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
@@ -27,5 +33,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 首次初始化：解压 bootstrap + payload。dataSync 类型（Android 14+ 必需） -->
+        <service
+            android:name=".SetupService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>
