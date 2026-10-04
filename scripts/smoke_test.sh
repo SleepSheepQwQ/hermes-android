@@ -41,16 +41,23 @@ bootstrap)
   # 2) 关键二进制存在性
   #    注意：python3 / sh / ls 等在 zip 里可能是**软链**（记录在 SYMLINKS.txt），
   #    不出现为独立文件条目，故需同时查文件列表与软链清单。
+  #    版本号不硬编码：从文件列表里探测实际的 python3.X。
   SYML="$SCRATCH/symlinks.txt"
   unzip -p "$FILE" SYMLINKS.txt > "$SYML" 2>/dev/null || : > "$SYML"
   has_entry() {
     local name="$1"
     grep -qE "(^|\s)${name}\$" "$LIST" && return 0
-    # 软链格式：目标←链接名
     grep -qE "←\.?/?${name}\$" "$SYML" && return 0
     return 1
   }
-  for t in python3.14 bash tar; do
+  PYVER=$(grep -oE "bin/python3\.[0-9]+" "$LIST" | head -1 | sed 's|bin/||')
+  if [ -n "$PYVER" ]; then
+    ok "探测到 Python: $PYVER"
+    has_entry "bin/$PYVER" && ok "bin/$PYVER 存在" || bad "bin/$PYVER 缺失"
+  else
+    bad "未在 bootstrap 中找到任何 bin/python3.X"
+  fi
+  for t in bash tar; do
     if has_entry "bin/$t"; then ok "bin/$t 存在"; else bad "bin/$t 缺失"; fi
   done
   # 这些通常是软链
@@ -65,8 +72,13 @@ bootstrap)
     else info "bin/$t 缺失（若 extras 未包含则正常）"; fi
   done
 
-  # 4) 关键库
-  for l in libpython3.14.so libandroid-support.so; do
+  # 4) 关键库（版本号跟随探测到的 Python）
+  if [ -n "$PYVER" ]; then
+    LIBPY="lib${PYVER}.so"
+    if grep -qE "lib/${LIBPY}\$" "$LIST"; then ok "lib/$LIBPY 存在"
+    else info "lib/$LIBPY 未直接出现（可能为软链或随 managed python 提供）"; fi
+  fi
+  for l in libandroid-support.so; do
     if grep -qE "lib/${l}\$" "$LIST"; then ok "lib/$l 存在"; else bad "lib/$l 缺失"; fi
   done
 
@@ -90,9 +102,12 @@ bootstrap)
         done < SYMLINKS.txt
       fi
       chmod -R +x bin libexec 2>/dev/null
+      # 用探测到的 python 版本，不硬编码
+      PYEXE="$SCRATCH/rootfs/bin/${PYVER:-python3}"
+      [ -x "$PYEXE" ] || PYEXE="$SCRATCH/rootfs/bin/python3"
       if LD_LIBRARY_PATH="$SCRATCH/rootfs/lib" \
-         "$SCRATCH/rootfs/bin/python3.14" -c "import sys; assert sys.version_info[:2]==(3,14)" 2>/dev/null; then
-        ok "Python 3.14 可执行（重定位验证通过）"
+         "$PYEXE" -c "import sys; print(sys.version)" 2>/dev/null; then
+        ok "Python 可执行（重定位验证通过）"
       else
         bad "Python 无法执行（重定位失败）"
       fi

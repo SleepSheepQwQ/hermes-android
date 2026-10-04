@@ -141,6 +141,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install build-tools (apksigner)
+        run: |
+          set -eux
+          # setup-android 不预装 build-tools；apksigner 在其中
+          sdkmanager "build-tools;35.0.0" >/dev/null || sdkmanager --list | head -20
+          ls "$ANDROID_SDK_ROOT/build-tools/"
+
       - name: Build APK
         env:
           BUILD_TYPE: ${{ inputs.build_type }}
