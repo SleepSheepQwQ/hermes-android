@@ -34,7 +34,8 @@ jobs:
       - name: Install generator deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 ar jq xz-utils zip file
+          # ar 属于 binutils；其余为脚本自检需要的命令
+          sudo apt-get install -y aria2 binutils jq xz-utils zip unzip file zstd patch
 
       - name: Generate customized aarch64 bootstrap
         working-directory: termux-packages
