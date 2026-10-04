@@ -109,8 +109,10 @@ bash "$WORK/fix_editable.sh" "$PAY" || {
 echo "==> 修复 venv 的 Python 路径（软链 + pyvenv.cfg home=）"
 # 关键：venv/bin/python 是指向构建机绝对路径的软链，pyvenv.cfg 的 home= 同理。
 # 不重写则搬进 APK 后解释器找不到、标准库找不到（docs/13）。
+# 脚本会自动探测 base python 来源（bootstrap 的 usr/bin 或 managed tools/python-*）
+# 并映射到 APK 内的对应位置。
 bash "$WORK/fix_python_paths.sh" "$PAY" \
-  "/data/data/com.nousresearch.hermesandroid/files/opt" || {
+  "/data/data/com.nousresearch.hermesandroid/files" || {
   echo "!! fix_python_paths 失败"; exit 1; }
 
 echo "==> 校验 payload 自包含"

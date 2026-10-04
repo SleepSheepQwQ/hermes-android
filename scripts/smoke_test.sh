@@ -146,14 +146,16 @@ payload)
       else bad "editable finder 仍有 $leaks 处绝对路径（需 fix_editable.sh）"; fi
 
       # 4b) venv 的 Python 路径检查（docs/13）
-      #     venv/bin/python 若是指向构建机绝对路径的软链，搬走后必断
+      #     venv/bin/python 若是指向构建机绝对路径的软链，搬走后必断。
+      #     合法目标有两种（取决于 base python 来源）：
+      #       <files>/usr/bin/...            （bootstrap python）
+      #       <files>/opt/tools/python-*/... （managed python）
       pybin="$ROOT/venv/bin/python"
       if [ -L "$pybin" ]; then
         tgt=$(readlink "$pybin")
         case "$tgt" in
-          /*) 
-            # 绝对软链：必须指向 APK 目标前缀，否则断链
-            if echo "$tgt" | grep -q "^/data/data/com.nousresearch.hermesandroid/"; then
+          /*)
+            if echo "$tgt" | grep -q "^/data/data/com.nousresearch.hermesandroid/files/"; then
               ok "venv/bin/python 软链已重写到 APK 路径"
             else
               bad "venv/bin/python -> $tgt（构建机路径，搬走后断链；需 fix_python_paths.sh）"
@@ -172,12 +174,28 @@ payload)
       if [ -f "$cfg" ]; then
         h=$(grep '^home' "$cfg" 2>/dev/null | head -1 | sed 's/^home *= *//')
         case "$h" in
-          /data/data/com.nousresearch.hermesandroid/*)
+          /data/data/com.nousresearch.hermesandroid/files/*)
             ok "pyvenv.cfg home= 已重写到 APK 路径" ;;
           "")
             bad "pyvenv.cfg 缺少 home= 行" ;;
           *)
             bad "pyvenv.cfg home=$h（构建机路径，搬走后解释器找不到 stdlib）" ;;
+        esac
+      fi
+
+      # 4d) managed python 一致性：若软链指向 opt/tools，payload 内必须有该目录
+      if [ -L "$pybin" ]; then
+        tgt=$(readlink "$pybin")
+        case "$tgt" in
+          */files/opt/tools/*)
+            rel="${tgt#*/files/opt/}"          # tools/python-xxx/.../bin/python3.14
+            ver="${rel#tools/}"; ver="${ver%%/*}"
+            if [ -d "$ROOT/tools/$ver" ]; then
+              ok "payload 内自带 managed python（$ver）"
+            else
+              bad "软链指向 $ver 但 payload/tools/$ver 不存在"
+            fi
+            ;;
         esac
       fi
 
