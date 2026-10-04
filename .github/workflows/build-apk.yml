@@ -60,13 +60,15 @@ jobs:
           set -eux
           BTAG="${{ inputs.bootstrap_tag }}"
           PTAG="${{ inputs.payload_tag }}"
+          # 注意：gh release list 默认是 tab 分隔的表格，**第一列是描述**、
+          # 第二列才是 tag。用 --json 取 tagName 最稳（不受列宽/描述影响）。
           if [ -z "$BTAG" ]; then
             BTAG=$(gh release list --repo "${{ github.repository }}" --limit 100 \
-                   | awk '$1 ~ /^bootstrap-/ {print $1; exit}')
+                   --json tagName --jq '[.[] | select(.tagName | startswith("bootstrap-"))][0].tagName // ""')
           fi
           if [ -z "$PTAG" ]; then
             PTAG=$(gh release list --repo "${{ github.repository }}" --limit 100 \
-                   | awk '$1 ~ /^payload-/ {print $1; exit}')
+                   --json tagName --jq '[.[] | select(.tagName | startswith("payload-"))][0].tagName // ""')
           fi
           # 防御：找不到 tag 就明确失败，不要让后续 gh release download "" 报出难懂的错
           [ -n "$BTAG" ] || { echo "!! 找不到任何 bootstrap-* Release"; exit 1; }
