@@ -280,9 +280,20 @@ public final class BootstrapInstaller {
 
     /**
      * 生成运行环境变量。
-     * LD_LIBRARY_PATH 必须指向 $PREFIX/lib —— Hermes 的 managed python 二进制
-     * RUNPATH 硬编码了 /data/data/com.termux/files/usr/lib，在独立 APK 里不匹配，
-     * 靠这里覆盖（见 docs/06-size-and-deps.md 解法 A）。
+     *
+     * 关键变量（依据 hermes-agent 源码 pm/environments.py + scripts/build/launchers.py）：
+     *
+     *  - PREFIX           Termux 前缀。bootstrap 二进制内置默认值是 /data/data/com.termux/...
+     *                     必须显式覆盖（docs/07 实测：不设就会读到错误默认值）。
+     *  - LD_LIBRARY_PATH  指向 $PREFIX/lib。bootstrap 的 DT_RUNPATH 硬编码了
+     *                     /data/data/com.termux/files/usr/lib，而 RUNPATH 优先级低于
+     *                     LD_LIBRARY_PATH，故可覆盖（docs/07 已实测通过）。
+     *  - HERMES_HOME      整体重定位用户数据目录（hermes_constants.get_hermes_home）。
+     *  - HERMES_RUNTIME_DIR  最高优先级指向预置 tools store（pm/environments.store_root），
+     *                     避免 PM 去联网下载工具。
+     *  - HERMES_DISABLE_LAZY_INSTALLS=1  禁掉按需下载（等效 security.allow_lazy_installs:false），
+     *                     因为工具已随 APK 预置。
+     *  - TERMUX_VERSION   若干 Termux 优化分支靠它命中；不设会走桌面路径。
      */
     public static String[] hermesEnv(Context ctx) {
         File files = ctx.getFilesDir();
@@ -291,17 +302,24 @@ public final class BootstrapInstaller {
         String o = optDir(ctx).getAbsolutePath();
         return new String[]{
                 "PREFIX=" + p,
+                "TERMUX_PREFIX=" + p,
                 "HOME=" + h,
                 "HERMES_HOME=" + h + "/.hermes",
-                "PATH=" + p + "/bin:" + h + "/.local/bin:" + o + "/bin:" + files + "/bin",
-                "LD_LIBRARY_PATH=" + p + "/lib",
+                // 预置载荷布局：$opt/{manifest.json,hermes-src/,venv/,tools/}
+                "HERMES_RUNTIME_DIR=" + o + "/tools",
+                "HERMES_DISABLE_LAZY_INSTALLS=1",
+                "PATH=" + p + "/bin:" + h + "/.local/bin:" + o + "/venv/bin:"
+                        + o + "/tools/bin:" + files + "/bin",
+                "LD_LIBRARY_PATH=" + p + "/lib:" + o + "/tools/lib",
                 "TMPDIR=" + p + "/tmp",
                 "TERM=xterm-256color",
                 "LANG=en_US.UTF-8",
                 "SHELL=" + p + "/bin/login",
-                // Termux 兼容变量，部分脚本会读
+                "ANDROID_DATA_ROOT=" + files.getAbsolutePath(),
+                // Termux 兼容变量
                 "TERMUX_APP_PACKAGE=" + ctx.getPackageName(),
-                "TERMUX_PREFIX=" + p,
+                "TERMUX_VERSION=0.118.3",
+                "TERMUX_MAIN_PACKAGE_FORMAT=debian",
         };
     }
 
