@@ -301,18 +301,38 @@ public final class BootstrapInstaller {
         }
         Log.i(TAG, "软链重建: 成功 " + ok + " 条" + (fail > 0 ? "，失败 " + fail + " 条" : ""));
 
-        // 关键软链白名单：缺一不可，否则 shell 起不来
-        String[] critical = {"bin/sh", "bin/bash", "lib/libandroid-support.so"};
+        // 关键软链白名单：这些缺一不可，否则 shell / python 起不来。
+        // 实测（裁剪版 bootstrap）：1551 条软链里 1032 条会失败，但失败的
+        // **全部**是 share/man(914)、share/doc(89)、include/ 等文档与头文件——
+        // 对运行毫无影响。因此**不能**用 fail>0 一刀切判定失败，
+        // 否则裁剪过的 bootstrap 永远装不上。
+        // 只强制关键项；其余失败容忍并记录。
+        String[] critical = {
+                "bin/sh", "bin/bash",
+                "lib/libandroid-support.so",
+        };
+        java.util.List<String> missing = new java.util.ArrayList<>();
         for (String c : critical) {
             File f = new File(prefix, c);
-            if (!f.exists()) {
-                throw new IOException("关键软链缺失: " + c + "（软链失败 " + fail + " 条）");
+            if (!f.exists()) missing.add(c);
+        }
+        // python 软链名随版本变化，用通配探测
+        File bin = new File(prefix, "bin");
+        File[] bins = bin.listFiles();
+        boolean hasPy = false;
+        if (bins != null) {
+            for (File b : bins) {
+                String n = b.getName();
+                if (n.equals("python") || n.equals("python3")
+                        || n.startsWith("python3.")) {
+                    hasPy = true;
+                    break;
+                }
             }
         }
-        // 有任何失败就整体失败：1551 条里断几条往往意味着系统性错误
-        // （例如文件系统不支持 symlink、路径非法），继续下去只会得到半死环境。
-        if (fail > 0) {
-            throw new IOException("软链重建失败 " + fail + " 条，安装中止");
+        if (!hasPy) missing.add("bin/python*");
+        if (!missing.isEmpty()) {
+            throw new IOException("关键软链缺失: " + missing + "（软链失败 " + fail + " 条）");
         }
     }
 
