@@ -38,6 +38,8 @@ public final class BootstrapInstaller {
     private static final String STAGING_NAME = "usr-staging";
     private static final String HOME_NAME = "home";
     private static final String OPT_NAME = "opt";
+    private static final String STAMP_BOOTSTRAP = ".bootstrap-ok";
+    private static final String STAMP_PAYLOAD = ".payload-ok";
 
     /** 可执行目录白名单（相对 $PREFIX） */
     private static final String[] EXEC_DIRS = {"bin", "libexec", "lib"};
@@ -46,11 +48,27 @@ public final class BootstrapInstaller {
 
     private BootstrapInstaller() {}
 
-    /** $PREFIX 存在且非空 == 安装完成（staging 原子 rename 的保证） */
+    /**
+     * 安装是否完成。
+     *
+     * 判据演进（可靠性考虑）：
+     *  - 最初用「staging 原子 rename」保证 $PREFIX 一旦出现就是完整的；
+     *    但 rename 前若我们已 mkdir 过 $PREFIX（回退分支），就可能留下半成品。
+     *  - 因此再加一道**成功标记文件**：解压+建链+chmod 全部成功后写入
+     *    $FILES/.bootstrap-ok。只有标记存在才算装好，避免半成品被误判为完成。
+     */
     public static boolean isInstalled(Context ctx) {
         File prefix = prefixDir(ctx);
-        File[] kids = prefix.listFiles();
-        return prefix.isDirectory() && kids != null && kids.length > 0;
+        File stamp = new File(ctx.getFilesDir(), STAMP_BOOTSTRAP);
+        return stamp.isFile() && prefix.isDirectory()
+                && new File(prefix, "bin").isDirectory();
+    }
+
+    private static void writeStamp(Context ctx, String name) throws IOException {
+        File stamp = new File(ctx.getFilesDir(), name);
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(stamp)) {
+            fos.write(("ok " + System.currentTimeMillis() + "\n").getBytes("UTF-8"));
+        }
     }
 
     public static File prefixDir(Context ctx) {
@@ -169,32 +187,61 @@ public final class BootstrapInstaller {
             }
             deleteRecursively(staging);
         }
+
+        // Termux 脚本依赖 $PREFIX/tmp 存在
+        File tmp = new File(prefix, "tmp");
+        if (!tmp.isDirectory()) //noinspection ResultOfMethodCallIgnored
+            tmp.mkdirs();
+
+        // 全部成功后才写标记
+        writeStamp(ctx, STAMP_BOOTSTRAP);
         Log.i(TAG, "bootstrap 安装完成 -> " + prefix);
     }
 
-    /** SYMLINKS.txt：每行 "目标←链接名"（相对 $PREFIX） */
+    /**
+     * SYMLINKS.txt：每行 "目标←链接名"，分隔符是 UTF-8 的 U+2190（←，字节 e2 86 90）。
+     * 实测样本：`../../../share/fontconfig/conf.avail/60-generic.conf←./etc/fonts/conf.d/60-generic.conf`
+     * 目标可能是**相对路径**（相对链接所在目录解析），链接名常带 `./` 前缀。
+     *
+     * 实现要点：
+     *  - 用 java.nio 的 Files.createSymbolicLink 而不是 fork `ln`：
+     *    bootstrap 有约 1551 条软链，逐个 fork 一个进程在手机上极慢；
+     *    而且首启动时进程 PATH 里还没有 $PREFIX/bin，裸名 `ln` 会直接失败。
+     *  - target 原样写入（不解析），与 `ln -s <target> <link>` 语义一致。
+     */
     private static void rebuildSymlinks(File prefix, String content) {
+        int ok = 0, fail = 0;
+        java.nio.file.Path prefixPath = prefix.toPath().toAbsolutePath().normalize();
         for (String line : content.split("\n")) {
             line = line.trim();
             if (line.isEmpty()) continue;
-            int idx = line.indexOf('←');
+            int idx = line.indexOf('\u2190');   // ←
             if (idx <= 0) continue;
             String target = line.substring(0, idx);
             String linkPath = line.substring(idx + 1);
             try {
                 File link = new File(prefix, linkPath);
                 File lp = link.getParentFile();
-                if (lp != null) //noinspection ResultOfMethodCallIgnored
+                if (lp != null && !lp.exists()) {
+                    //noinspection ResultOfMethodCallIgnored
                     lp.mkdirs();
-                //noinspection ResultOfMethodCallIgnored
-                link.delete();
-                Process p = new ProcessBuilder("ln", "-sf", target, link.getAbsolutePath())
-                        .redirectErrorStream(true).start();
-                p.waitFor();
+                }
+                // 越界保护：链接必须落在 $PREFIX 内
+                java.nio.file.Path linkAbs = link.toPath().toAbsolutePath().normalize();
+                if (!linkAbs.startsWith(prefixPath)) {
+                    Log.w(TAG, "跳过越界软链: " + linkPath);
+                    continue;
+                }
+                java.nio.file.Files.deleteIfExists(linkAbs);
+                java.nio.file.Files.createSymbolicLink(linkAbs,
+                        java.nio.file.Paths.get(target));
+                ok++;
             } catch (Exception ex) {
-                Log.w(TAG, "建软链失败: " + line, ex);
+                fail++;
+                if (fail <= 5) Log.w(TAG, "建软链失败: " + line, ex);
             }
         }
+        Log.i(TAG, "软链重建: 成功 " + ok + " 条" + (fail > 0 ? "，失败 " + fail + " 条" : ""));
     }
 
     private static void setExecutableRecursive(File dir) {
@@ -261,7 +308,15 @@ public final class BootstrapInstaller {
     /** 载荷（源码 + venv/tools）是否已就位 */
     public static boolean isPayloadInstalled(Context ctx) {
         File opt = optDir(ctx);
-        return new File(opt, "hermes-src").isDirectory()
-                && new File(opt, "venv/bin/hermes").exists();
+        File stamp = new File(ctx.getFilesDir(), STAMP_PAYLOAD);
+        return stamp.isFile() && new File(opt, "hermes-src").isDirectory();
+    }
+
+    /** 供 PayloadInstaller 在成功后调用 */
+    static void markPayloadInstalled(Context ctx) throws IOException {
+        File stamp = new File(ctx.getFilesDir(), STAMP_PAYLOAD);
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(stamp)) {
+            fos.write(("ok " + System.currentTimeMillis() + "\n").getBytes("UTF-8"));
+        }
     }
 }

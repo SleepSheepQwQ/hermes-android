@@ -15,13 +15,20 @@ import java.io.File;
 import java.io.InputStreamReader;
 
 /**
- * 最小可用版：首次启动解压 bootstrap，然后可运行 hermes 并把输出显示出来。
- * 后续可替换为真正的终端模拟器（termux terminal-emulator 或 xterm.js+WebView）。
+ * 最小可用版 UI：
+ *   「安装环境」→ 解压 bootstrap + Hermes 载荷
+ *   「运行 Hermes」→ 在 $PREFIX 环境里跑 hermes
+ *
+ * 注意：解压耗时较长（数千~上万小文件），必须放在后台线程。
+ * 正式版应改为前台 Service + 通知（见 docs/05-architecture-decisions.md），
+ * 否则系统可能在解压中途回收进程。
  */
 public class MainActivity extends AppCompatActivity {
 
     private TextView output;
     private ScrollView scroller;
+    private Button installBtn;
+    private Button runBtn;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     @Override
@@ -31,29 +38,62 @@ public class MainActivity extends AppCompatActivity {
 
         output = findViewById(R.id.output);
         scroller = findViewById(R.id.scroller);
-        Button installBtn = findViewById(R.id.btn_install);
-        Button runBtn = findViewById(R.id.btn_run);
+        installBtn = findViewById(R.id.btn_install);
+        runBtn = findViewById(R.id.btn_run);
 
-        installBtn.setOnClickListener(v -> installBootstrap());
+        installBtn.setOnClickListener(v -> installAll());
         runBtn.setOnClickListener(v -> runHermes());
 
-        if (BootstrapInstaller.isInstalled(this)) {
-            append("bootstrap 已就绪：" + BootstrapInstaller.prefixDir(this));
-        } else {
-            append("尚未安装 bootstrap，点「安装环境」。");
+        refreshState();
+    }
+
+    private void refreshState() {
+        boolean boot = BootstrapInstaller.isInstalled(this);
+        boolean payload = PayloadInstaller.isInstalled(this);
+        append("环境状态: bootstrap=" + (boot ? "已装" : "未装")
+                + ", 载荷=" + (payload ? "已装" : "未装"));
+        if (!boot) {
+            append("点「安装环境」开始首次初始化。");
+        } else if (payload) {
+            append("一切就绪，可点「运行 Hermes」。");
         }
     }
 
-    private void installBootstrap() {
-        append("开始解压 bootstrap…");
+    private void installAll() {
+        installBtn.setEnabled(false);
+        append("开始安装（bootstrap + 载荷）…");
         new Thread(() -> {
             try {
-                BootstrapInstaller.install(this);
-                ui.post(() -> append("bootstrap 安装完成。"));
+                File nativeDir = new File(getApplicationInfo().nativeLibraryDir);
+                append("nativeLibraryDir=" + nativeDir);
+
+                if (!BootstrapInstaller.isInstalled(this)) {
+                    append("解压 bootstrap（文件较多，请稍候）…");
+                    BootstrapInstaller.install(this);
+                    append("bootstrap 完成。");
+                } else {
+                    append("bootstrap 已存在，跳过。");
+                }
+
+                if (!PayloadInstaller.isInstalled(this)) {
+                    append("解压 Hermes 载荷…");
+                    PayloadInstaller.install(this);
+                    append("载荷完成。");
+                } else {
+                    append("载荷已存在，跳过。");
+                }
+
+                ui.post(() -> {
+                    append("安装全部完成。");
+                    installBtn.setEnabled(true);
+                });
             } catch (Exception e) {
-                ui.post(() -> append("安装失败: " + e));
+                ui.post(() -> {
+                    append("安装失败: " + e);
+                    installBtn.setEnabled(true);
+                });
             }
-        }).start();
+        }, "hermes-installer").start();
     }
 
     private void runHermes() {
@@ -61,12 +101,17 @@ public class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "请先安装环境", Toast.LENGTH_SHORT).show();
             return;
         }
+        runBtn.setEnabled(false);
         new Thread(() -> {
             try {
                 File prefix = BootstrapInstaller.prefixDir(this);
-                File shell = new File(prefix, "bin/login");
+                File opt = BootstrapInstaller.optDir(this);
                 File bash = new File(prefix, "bin/bash");
-                File exe = bash.exists() ? bash : shell;
+                File login = new File(prefix, "bin/login");
+                File exe = bash.exists() ? bash : login;
+
+                // 优先用载荷里的 venv/bin/hermes
+                File hermes = new File(opt, "venv/bin/hermes");
 
                 ProcessBuilder pb = new ProcessBuilder(exe.getAbsolutePath(), "-l");
                 pb.environment().clear();
@@ -75,12 +120,13 @@ public class MainActivity extends AppCompatActivity {
                     pb.environment().put(kv.substring(0, i), kv.substring(i + 1));
                 }
                 pb.redirectErrorStream(true);
-                File home = BootstrapInstaller.homeDir(this);
-                pb.directory(home);
+                pb.directory(BootstrapInstaller.homeDir(this));
 
                 Process p = pb.start();
-                // 写一条命令：进 hermes
-                p.getOutputStream().write("hermes --version\nexit\n".getBytes());
+                String cmd = hermes.exists()
+                        ? "\"" + hermes.getAbsolutePath() + "\" --version\nexit\n"
+                        : "hermes --version\nexit\n";
+                p.getOutputStream().write(cmd.getBytes());
                 p.getOutputStream().flush();
 
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
@@ -90,11 +136,17 @@ public class MainActivity extends AppCompatActivity {
                     ui.post(() -> append(l));
                 }
                 int code = p.waitFor();
-                ui.post(() -> append("退出码: " + code));
+                ui.post(() -> {
+                    append("退出码: " + code);
+                    runBtn.setEnabled(true);
+                });
             } catch (Exception e) {
-                ui.post(() -> append("运行失败: " + e));
+                ui.post(() -> {
+                    append("运行失败: " + e);
+                    runBtn.setEnabled(true);
+                });
             }
-        }).start();
+        }, "hermes-runner").start();
     }
 
     private void append(String s) {
